@@ -100,11 +100,42 @@ def test_row_select_column():
     assert "data-select" not in h2 and 'aria-colcount="5"' in h2
 
 
-def test_selection_marked():
+def test_full_grid_renders_all_rows():
+    # Excel-style: the whole dataset is in one render (no pagination).
+    n = 300
+    html = render_grid(_Model(n), label="C", first=0, last=n - 1)
+    assert 'data-row="0"' in html
+    assert f'data-row="{n - 1}"' in html
+    assert html.count('role="row"') == n + 1  # data rows + header row
+
+
+def test_colindex_sequence_for_announcements():
+    # The runtime composes "column N" from aria-colindex, so it must be a correct
+    # 1-based sequence; with row_select everything shifts right by one.
+    rows = render_rows(_Model(5), 0, 0, selected=set())
+    assert 'aria-colindex="1"' in rows  # row header (#)
+    assert 'aria-colindex="5"' in rows  # last of 5 columns
+    rs = render_rows(_Model(5), 0, 0, selected=set(), row_select=True)
+    assert 'data-select="1"' in rs and 'aria-colindex="1"' in rs  # select col is 1
+    assert 'aria-colindex="6"' in rs  # columns pushed right by the select column
+
+
+def test_bulk_selected_row_uses_class_not_aria_selected():
     rows = render_rows(_Model(10), 0, 2, selected={1})
-    # the selected row's <tr> is marked
-    assert 'aria-selected="true" data-row="1"' in rows
-    # exactly one row is selected at the <tr> level
-    assert rows.count('aria-selected="true" data-row=') == 1
-    # unselected rows are explicitly false
-    assert 'aria-selected="false" data-row="0"' in rows
+    # the bulk-selected row carries the wag-rowsel class
+    assert 'data-row="1" class="wag-rowsel"' in rows
+    # exactly one row is class-selected
+    assert rows.count('class="wag-rowsel"') == 1
+    # unselected rows have no class
+    assert 'data-row="0" class' not in rows
+
+
+def test_render_never_emits_aria_selected():
+    # The whole point of the new selection model: aria-selected is added only at
+    # runtime on range cells, never rendered, and never set to "false".
+    for kw in ({}, {"row_select": True}):
+        h = render_grid(_Model(10), label="C", first=0, last=4, selected={1, 3}, **kw)
+        assert "aria-selected" not in h
+        assert 'aria-selected="false"' not in h
+    rows = render_rows(_Model(10), 0, 4, selected={2}, row_select=True)
+    assert "aria-selected" not in rows

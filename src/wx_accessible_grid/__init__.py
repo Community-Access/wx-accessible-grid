@@ -37,7 +37,7 @@ VRP, the accessible radio programmer.
 
 from __future__ import annotations
 
-from wx_accessible_grid.grid import AccessibleGrid
+from wx_accessible_grid.grid import AccessibleGrid, ContextMenuItem
 from wx_accessible_grid.model import (
     CHECKBOX,
     COMBO,
@@ -50,9 +50,10 @@ from wx_accessible_grid.model import (
     SetResult,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
     "AccessibleGrid",
+    "ContextMenuItem",
     "GridModel",
     "Column",
     "SetResult",

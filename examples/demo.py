@@ -3,15 +3,20 @@
     pip install -e .
     python examples/demo.py
 
-It builds a 2,500-row grid (to exercise paging and large-dataset performance,
-the exact condition that broke earlier in-grid attempts) with one of every
-editor: text, combo, checkbox, slider, stepper. Try, with NVDA running:
+It builds a 2,500-row Excel-style grid (the whole thing in the DOM, no paging)
+with one of every editor: text, combo, checkbox, slider, stepper. Events print
+to stdout so you can watch the grid fire them. Try, with NVDA running:
 
-* Arrow around — moving across a row speaks the column; moving down speaks the
-  row number. Arrow past the bottom/top to roll onto the next/previous page.
-* F2 or Enter on a cell to edit; Enter commits, Escape cancels.
-* Space (or Ctrl+Space) to select a row; Delete to delete selected rows.
-* The Applications key (or Shift+F10) on a cell opens a native row menu.
+* Arrow around — it speaks the cell value, and leads with the row label going
+  down a column. Plain arrows say nothing about selection. Home/End and
+  Ctrl+Home/Ctrl+End jump; Ctrl+arrow jumps to a region edge; PageUp/Down move 20.
+* Tab and Shift+Tab move cell to cell and wrap at the row ends.
+* F2 or just start typing to edit a cell; Enter commits and drops down a row,
+  Escape cancels then (pressed again) leaves the grid. F6 also leaves.
+* Shift+arrow extends a cell range ("Selected B2 to B5, 4 cells"); Ctrl+Space
+  selects the column, Shift+Space the row, Ctrl+A all; a plain arrow collapses it.
+* Space selects the row for bulk ops (the checkbox column); Delete deletes the
+  selection. The Applications key (or Shift+F10) opens a native Edit/Delete menu.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ from wx_accessible_grid import (
     TEXT,
     AccessibleGrid,
     Column,
+    ContextMenuItem,
     GridModel,
     SetResult,
 )
@@ -119,33 +125,30 @@ class DemoFrame(wx.Frame):
             panel,
             self.model,
             label="Demo channels",
-            page_size=100,
-            row_select=True,
+            row_select=True,  # page_size defaults to 0 — whole grid, no pagination
             on_context=self._on_context,
-            description="Arrow to move, F2 or Enter to edit, Space to select.",
+            on_navigate=lambda r, c: print(f"navigate -> row {r}, {c}"),
+            on_activate=lambda r, c: print(f"activate -> row {r}, {c}"),
+            on_selection_changed=lambda rows: print(f"selection -> {rows}"),
+            on_edit_committed=lambda r, c, v: print(f"edit committed -> row {r}, {c} = {v!r}"),
+            description="Arrow/Tab to move, F2 or type to edit, Space to select.",
         )
         sizer = wx.BoxSizer(wx.VERTICAL)
         sizer.Add(self.grid.control, 1, wx.EXPAND)
         panel.SetSizer(sizer)
         self.Show()
-        wx.CallAfter(self.grid.focus)
+        # The grid auto-enters on load (lands the cursor on the first cell), so no
+        # explicit focus() call is needed here.
 
     def _on_context(self, row: int, column: str) -> None:
-        menu = wx.Menu()
-        edit = menu.Append(wx.ID_ANY, f"Edit row {row + 1} (full)\tEnter")
-        delete = menu.Append(wx.ID_ANY, f"Delete row {row + 1}\tDel")
-        self.Bind(
-            wx.EVT_MENU,
-            lambda _e: self.grid.announce(f"Would open full editor for row {row + 1}"),
-            edit,
-        )
-        self.Bind(
-            wx.EVT_MENU,
-            lambda _e: (self.model.delete_rows([row]), self.grid.refresh()),
-            delete,
-        )
-        self.grid.control.PopupMenu(menu)
-        menu.Destroy()
+        # Find the column index for edit_cell; fall back to the first column.
+        names = [c.name for c in self.model.columns()]
+        col = names.index(column) if column in names else 0
+        self.grid.show_context_menu([
+            ContextMenuItem(f"Edit {column} (F2)", lambda: self.grid.edit_cell(row, col)),
+            ContextMenuItem(f"Delete row {row + 1} (Del)",
+                            lambda: self.grid._delete_rows([row])),
+        ])
 
 
 if __name__ == "__main__":

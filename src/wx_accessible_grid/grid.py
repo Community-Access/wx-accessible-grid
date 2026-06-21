@@ -5,19 +5,29 @@ It owns an :class:`~wx_accessible_webview.AccessibleWebView`, renders a
 the runtime behaviour, and brokers every edit/select/delete/page request between
 the page and your model. Add :attr:`control` to a sizer like any wx window.
 
-Only one page of rows is in the DOM at a time, so a 10,000-channel radio stays
-fast; ``aria-rowcount`` keeps the user's sense of "row N of many" correct.
+By default the whole grid renders at once (no pagination) for Excel-style
+navigation; ``aria-rowcount`` still tells the screen reader "row N of many".
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
+from typing import Callable
 
 from wx_accessible_webview import DEFAULT_STYLES, AccessibleWebView
 
 from wx_accessible_grid.assets import GRID_CSS, runtime_js
 from wx_accessible_grid.model import GridModel
 from wx_accessible_grid.render import render_grid, render_rows
+
+
+@dataclass
+class ContextMenuItem:
+    """One entry in a grid context menu: a label and a zero-argument callback."""
+
+    label: str
+    callback: Callable[[], None]
 
 
 class AccessibleGrid:
@@ -32,16 +42,29 @@ class AccessibleGrid:
     label:
         Accessible name for the grid (its caption and ``aria-label``).
     page_size:
-        Rows rendered per page; ``0`` renders everything on one page. Paging is
-        invisible to the user — arrowing past the edge loads the next page and
-        keeps going.
+        Rows rendered per page; ``0`` (the default) renders the whole grid on one
+        page with no pagination — Excel-style navigation expects the full dataset
+        in the DOM. A positive value still renders in chunks, but arrow/Tab
+        navigation no longer crosses chunk boundaries, so leave it at 0.
     handler_name:
         WebView bridge handler name (only change it if you host two grids that
         must not collide).
     on_context:
         Optional ``on_context(row: int, column: str)`` callback fired when the
-        user presses the context-menu key on a cell — host a native ``wx.Menu``
-        (or open a full-row editor) here.
+        user presses the context-menu key (Shift+F10 / Applications) on a cell —
+        build items and call :meth:`show_context_menu` here, or open a dialog.
+    on_navigate:
+        Optional ``on_navigate(row: int, column: str)`` fired (throttled) whenever
+        the active cell changes.
+    on_activate:
+        Optional ``on_activate(row: int, column: str)`` fired when Enter is pressed
+        on a non-editable cell (a row "open" hook).
+    on_selection_changed:
+        Optional ``on_selection_changed(rows: list[int])`` fired when row selection
+        changes.
+    on_edit_committed:
+        Optional ``on_edit_committed(row: int, column: str, display: str)`` fired
+        after the model accepts an edit (the authoritative display value).
     description:
         Optional sentence appended to the caption (usage hint).
     """
@@ -52,9 +75,13 @@ class AccessibleGrid:
         model: GridModel,
         *,
         label: str = "Data grid",
-        page_size: int = 100,
+        page_size: int = 0,
         handler_name: str = "wag",
         on_context=None,
+        on_navigate=None,
+        on_activate=None,
+        on_selection_changed=None,
+        on_edit_committed=None,
         description: str = "",
         row_select: bool = False,
     ) -> None:
@@ -63,10 +90,15 @@ class AccessibleGrid:
         self._page_size = max(0, int(page_size))
         self._handler = handler_name
         self._on_context = on_context
+        self._on_navigate = on_navigate
+        self._on_activate = on_activate
+        self._on_selection_changed = on_selection_changed
+        self._on_edit_committed = on_edit_committed
         self._description = description
         self._row_select = bool(row_select)
         self._page = 0
         self._selected: set[int] = set()  # absolute row indexes
+        self._active: tuple[int, int] = (0, 0)  # (row, col index) of the active cell
         self._installed = False
 
         self._awv = AccessibleWebView(
@@ -102,7 +134,14 @@ class AccessibleGrid:
         return self._awv.using_webview
 
     def focus(self) -> None:
+        """Put keyboard focus INTO the grid: focus the table and place the cursor
+        on the last active cell (the first cell to start), so arrows and Tab work
+        immediately. Focuses the table itself, not the webview wrapper, or the
+        keydown handler's focus gate would bail and the grid would feel dead."""
         self._awv.focus()
+        if self._awv.using_webview:
+            r, c = self._active
+            self._awv.run_js(f"window.__wag&&window.__wag.enterGrid({r},{c});")
 
     def selected_rows(self) -> list[int]:
         """Absolute indexes of the currently selected rows, ascending.
@@ -119,6 +158,47 @@ class AccessibleGrid:
 
     def announce(self, text: str) -> None:
         self._awv.status(text)
+
+    def get_active_cell(self) -> tuple[int, int]:
+        """The (row, column-index) of the cell the user is currently on."""
+        return self._active
+
+    def focus_cell(self, row: int, col: int = 0) -> None:
+        """Move the active cell to an absolute (row, column index)."""
+        self._active = (row, col)
+        if self._awv.using_webview:
+            self._awv.run_js(f"window.__wag&&window.__wag.focusCell({row},{col});")
+
+    def edit_cell(self, row: int, col: int = 0) -> None:
+        """Open the in-cell editor on an absolute (row, column index)."""
+        if self._awv.using_webview:
+            self._awv.run_js(f"window.__wag&&window.__wag.editCell({row},{col});")
+
+    def show_context_menu(self, items: list[ContextMenuItem]) -> None:
+        """Pop up a native ``wx.Menu`` of :class:`ContextMenuItem` on the grid and
+        return focus to the cell afterwards. Call this from your ``on_context``
+        handler. Native menus read correctly in NVDA/JAWS and arrow-navigate for
+        free, which is why we use one instead of an in-page menu."""
+        if not self._awv.using_webview:
+            return
+        import wx
+
+        menu = wx.Menu()
+        handlers: dict[int, Callable[[], None]] = {}
+        for item in items:
+            mi = menu.Append(wx.ID_ANY, item.label)
+            handlers[mi.GetId()] = item.callback
+        self.control.Bind(wx.EVT_MENU, lambda e: (handlers.get(e.GetId()) or (lambda: None))())
+        self.control.PopupMenu(menu)
+        menu.Destroy()
+        wx.CallAfter(self.focus)
+
+    def default_context_items(self, row: int, col: int) -> list[ContextMenuItem]:
+        """A ready-made Edit + Delete menu for hosts that just want the basics."""
+        return [
+            ContextMenuItem("Edit (F2)", lambda: self.edit_cell(row, col)),
+            ContextMenuItem("Delete (Del)", lambda: self._delete_rows([row])),
+        ]
 
     # -- paging math -------------------------------------------------------
 
@@ -209,6 +289,13 @@ class AccessibleGrid:
         def install():
             self._awv.run_js(runtime_js(self._handler))
             self._push_columns()
+            # The grid is the live surface: drop the user straight into it on the
+            # first cell so arrows and Tab work immediately, no tabbing onto the
+            # table. (Mirrors the spike's auto-enter; safe because the grid is the
+            # content the host just added.)
+            if self.model.row_count():
+                self._awv.focus()
+                self._awv.run_js(f"window.__wag&&window.__wag.enterGrid({self._first()},0);")
 
         self._wx.CallAfter(install)
 
@@ -226,7 +313,11 @@ class AccessibleGrid:
         elif action == "select":
             self._handle_select(data)
         elif action == "delete":
-            self._handle_delete(data)
+            self._delete_rows([int(r) for r in data.get("rows", [])])
+        elif action == "navigate":
+            self._handle_navigate(data)
+        elif action == "activate":
+            self._handle_activate(data)
         elif action == "page":
             self._handle_page(data)
         elif action == "context":
@@ -240,6 +331,8 @@ class AccessibleGrid:
         if result.ok:
             display = result.display or self.model.display(row, name)
             self._js_setcell(row, col, display, result.message)
+            if self._on_edit_committed is not None:
+                self._on_edit_committed(row, name, display)
         else:
             self._js_editfailed(row, col, result.message or "Invalid value")
 
@@ -249,9 +342,21 @@ class AccessibleGrid:
             self._selected.add(row)
         else:
             self._selected.discard(row)
+        if self._on_selection_changed is not None:
+            self._on_selection_changed(self.selected_rows())
 
-    def _handle_delete(self, data: dict) -> None:
-        rows = sorted({int(r) for r in data.get("rows", [])})
+    def _handle_navigate(self, data: dict) -> None:
+        row, col = int(data["row"]), int(data.get("col", 0))
+        self._active = (row, col)
+        if self._on_navigate is not None:
+            self._on_navigate(row, self._col_name(col))
+
+    def _handle_activate(self, data: dict) -> None:
+        if self._on_activate is not None:
+            self._on_activate(int(data["row"]), self._col_name(int(data.get("col", 0))))
+
+    def _delete_rows(self, rows: list[int]) -> None:
+        rows = sorted({int(r) for r in rows})
         if not rows:
             return
         result = self.model.delete_rows(rows)
@@ -262,6 +367,8 @@ class AccessibleGrid:
         focus = min(rows[0], max(0, self._total() - 1))
         self._page = (focus // self._size()) if self._size() else 0
         self._swap_rows(focus_row=focus, focus_col=0)
+        if self._on_selection_changed is not None:
+            self._on_selection_changed([])
         self.announce(result.message or f"Deleted {len(rows)} row(s)")
 
     def _handle_page(self, data: dict) -> None:

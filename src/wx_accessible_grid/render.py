@@ -52,15 +52,16 @@ def _cell_attrs(model: GridModel, row: int, col, col_index: int) -> str:
     return " ".join(attrs)
 
 
-def _select_cell(row: int, label: str, sel: str, colindex: int) -> str:
+def _select_cell(row: int, label: str, sel: bool, colindex: int) -> str:
     """The leading row-selection checkbox cell (a real checkbox, so it both looks
     like one for sighted users and announces its state to a screen reader). It is
     toggled with Space/Enter on the cell; the table keeps focus, so the input is
-    tabindex=-1 and not a separate tab stop."""
-    checked = " checked" if sel == "true" else ""
+    tabindex=-1 and not a separate tab stop. Bulk row selection rides on the
+    checkbox + the row's ``wag-rowsel`` class, NOT ``aria-selected`` (kept
+    exclusively for cell-range selection so plain arrows stay quiet)."""
+    checked = " checked" if sel else ""
     return (
-        f'<td role="gridcell" id="wag-r{row}-csel" data-select="1" '
-        f'aria-colindex="{colindex}" aria-selected="{sel}">'
+        f'<td role="gridcell" id="wag-r{row}-csel" data-select="1" aria-colindex="{colindex}">'
         f'<input type="checkbox" tabindex="-1" aria-label="Select row {escape(label)}"{checked}>'
         f"</td>"
     )
@@ -79,29 +80,34 @@ def render_rows(
     Used for the full page render and for the tbody-only refresh on paging,
     deletes, and edits, so refreshed rows always match the originals exactly.
     When ``row_select`` is set, each row begins with a selection checkbox.
+
+    ``aria-selected`` is never emitted here — it is added at runtime only on cells
+    inside an active range, and is never set to ``"false"``. Bulk-selected rows
+    carry the ``wag-rowsel`` class instead.
     """
     cols = model.columns()
     offset = 1 if row_select else 0
     out: list[str] = []
     for row in range(first, last + 1):
-        sel = "true" if row in selected else "false"
+        rowsel = row in selected
         cells: list[str] = []
         if row_select:
-            cells.append(_select_cell(row, model.row_label(row), sel, 1))
+            cells.append(_select_cell(row, model.row_label(row), rowsel, 1))
         for ci, col in enumerate(cols):
             text = escape(model.display(row, col.name))
             cid = cell_id(row, ci)
             common = (
-                f'id="{cid}" aria-colindex="{ci + 1 + offset}" aria-selected="{sel}" '
+                f'id="{cid}" aria-colindex="{ci + 1 + offset}" '
                 f"{_cell_attrs(model, row, col, ci)}"
             )
             if col.is_row_header:
                 cells.append(f'<th role="rowheader" scope="row" {common}>{text}</th>')
             else:
                 cells.append(f'<td role="gridcell" {common}>{text}</td>')
+        cls = ' class="wag-rowsel"' if rowsel else ""
         out.append(
-            f'<tr role="row" aria-rowindex="{row + 2}" aria-selected="{sel}" '
-            f'data-row="{row}">{"".join(cells)}</tr>'
+            f'<tr role="row" aria-rowindex="{row + 2}" data-row="{row}"{cls}>'
+            f'{"".join(cells)}</tr>'
         )
     return "".join(out)
 

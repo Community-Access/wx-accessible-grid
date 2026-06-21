@@ -33,8 +33,11 @@ table.wag-grid thead th {
   position: sticky; top: 0; background: var(--wag-head-bg, #f0f0f0);
   color: var(--wag-head-fg, #000);
 }
-table.wag-grid tbody tr[aria-selected="true"] {
+table.wag-grid tbody tr.wag-rowsel {
   background: var(--wag-sel-bg, #cde4ff); color: var(--wag-sel-fg, #000);
+}
+table.wag-grid tbody [aria-selected="true"] {
+  background: var(--wag-range-bg, #9ec5ff);
 }
 table.wag-grid .wag-active {
   outline: 3px solid var(--wag-focus, #0a5ad6); outline-offset: -3px;
@@ -47,6 +50,9 @@ table.wag-grid .wag-editor { width: 100%; box-sizing: border-box; font: inherit;
 
 
 # The behaviour. Framework-free vanilla JS. Comments explain the *why*.
+# Excel/Word-style data grid: arrows move a cell and announce column+row, Tab and
+# Shift+Tab walk cells and wrap at row ends, Enter commits and drops down a row,
+# F2 or typing edits in place, F6 leaves the grid, Shift+F10/Apps open a menu.
 _RUNTIME = r"""
 (function () {
   if (window.__wag && window.__wag.__installed) { return; }
@@ -54,6 +60,9 @@ _RUNTIME = r"""
   var cols = [];        // column metadata, pushed by Python
   var editing = null;   // the cell currently in edit mode, or null
   var activeId = null;  // id of the active (descendant) cell
+  var navTimer = null;  // throttle for the navigate event
+  var anchor = null;    // {ri, ci} DOM coords where a cell range began
+  var PAGE_ROWS = 20;   // PageUp/PageDown jump size (no pagination)
 
   function grid() { return document.getElementById("wag-grid"); }
   function post(msg) {
@@ -69,10 +78,11 @@ _RUNTIME = r"""
   function announce(text, assertive) {
     var el = liveEl(assertive) || document.getElementById("awv-status") || liveEl(false);
     if (!el) { return; }
+    // Clear then re-set on a real timer task so identical text re-announces and
+    // it fires reliably even right as the window appears (rAF is throttled when
+    // the page isn't actively rendering — e.g. the announce-on-open case).
     el.textContent = "";
-    var set = function () { el.textContent = text; };
-    if (window.requestAnimationFrame) { window.requestAnimationFrame(set); }
-    else { setTimeout(set, 16); }
+    setTimeout(function () { el.textContent = text; }, 0);
   }
 
   function bodyRows() {
@@ -86,6 +96,10 @@ _RUNTIME = r"""
   function rowOf(cell) {
     var tr = cell.closest("tr"); var r = tr && tr.getAttribute("data-row");
     return r == null ? -1 : parseInt(r, 10);   // -1 means the header row
+  }
+  function inHeader(cell) {
+    var tr = cell.closest("tr");
+    return !!(tr && tr.parentNode && tr.parentNode.tagName === "THEAD");
   }
 
   // Make a cell the active descendant — no .focus() on the cell, so NVDA stays
@@ -104,60 +118,214 @@ _RUNTIME = r"""
   }
   function focusGrid() { var g = grid(); if (g) { g.focus(); } }
 
-  function moveTo(tr, colIdx) {
+  // ----- coordinates + announcements -----------------------------------
+  function rowLabelOf(tr) {
+    var rh = tr.querySelector('[role="rowheader"]');
+    if (rh) { return rh.textContent.trim(); }
+    var r = tr.getAttribute("data-row");
+    return r != null ? "Row " + (parseInt(r, 10) + 1) : "";
+  }
+  // Spreadsheet coordinate of a cell, e.g. "B5", from its column index + row.
+  function coordOf(cell) {
+    var ci = parseInt(cell.getAttribute("aria-colindex"), 10) || 1;
+    var r = rowOf(cell), letter = "";
+    while (ci > 0) { letter = String.fromCharCode(65 + (ci - 1) % 26) + letter; ci = Math.floor((ci - 1) / 26); }
+    return letter + (r + 1);
+  }
+  // A cell's spoken name IS its value — no "column N" noise (the table's column
+  // and row headers give that for free). A vertical move leads with the row
+  // label ("Channel 5"); plain moves never speak about selection.
+  function announceCell(cell, vertical) {
+    if (!cell) { return; }
+    if (inHeader(cell)) { announce(cell.textContent.trim() + ", column header"); return; }
+    var tr = cell.closest("tr");
+    var value = cell.textContent.trim();
+    if (cell.getAttribute("role") === "rowheader") { announce(rowLabelOf(tr)); return; }
+    if (vertical) { announce(rowLabelOf(tr) + (value ? ", " + value : "")); }
+    else { announce(value || coordOf(cell)); }
+  }
+  function postNavigate(cell) {
+    var row = rowOf(cell), col = colIndexOf(cell);
+    if (navTimer) { clearTimeout(navTimer); }
+    navTimer = setTimeout(function () { post({ action: "navigate", row: row, col: col }); }, 60);
+  }
+
+  // ----- cell-range selection (aria-selected="true" only, never "false") -
+  function domCoords(cell) {
+    var rows = bodyRows(), tr = cell.closest("tr");
+    return { ri: rows.indexOf(tr), ci: cellsOf(tr).indexOf(cell) };
+  }
+  function cellByDom(ri, ci) { var tr = bodyRows()[ri]; return tr ? cellsOf(tr)[ci] : null; }
+  function clearRange() {
+    var g = grid(); if (!g) { return; }
+    Array.prototype.forEach.call(g.querySelectorAll('tbody [aria-selected]'),
+      function (c) { c.removeAttribute("aria-selected"); });   // omit it, never "false"
+  }
+  function paintRange(a, b) {
+    clearRange();
+    var rows = bodyRows();
+    var r0 = Math.min(a.ri, b.ri), r1 = Math.max(a.ri, b.ri);
+    var c0 = Math.min(a.ci, b.ci), c1 = Math.max(a.ci, b.ci), n = 0;
+    for (var rr = r0; rr <= r1; rr++) {
+      var cs = cellsOf(rows[rr]);
+      for (var cc = c0; cc <= c1; cc++) { if (cs[cc]) { cs[cc].setAttribute("aria-selected", "true"); n++; } }
+    }
+    return n;
+  }
+  function announceRange(a, b, n) {
+    var ca = cellByDom(a.ri, a.ci), cb = cellByDom(b.ri, b.ci);
+    if (ca && cb) {
+      announce("Selected " + coordOf(ca) + " to " + coordOf(cb) + ", " + n + (n === 1 ? " cell" : " cells"));
+    }
+  }
+
+  // Plain move: set active, COLLAPSE any range and re-anchor, announce the value.
+  function goTo(cell, vertical) {
+    if (!cell) { return; }
+    setActive(cell);
+    if (inHeader(cell)) { clearRange(); anchor = null; }
+    else { clearRange(); anchor = domCoords(cell); }
+    announceCell(cell, vertical);
+    postNavigate(cell);
+  }
+  function moveTo(tr, colIdx, vertical) {
     if (!tr) { return; }
     var cells = cellsOf(tr);
     if (!cells.length) { return; }
     colIdx = Math.max(0, Math.min(colIdx, cells.length - 1));
-    setActive(cells[colIdx]);
+    goTo(cells[colIdx], vertical);
+  }
+  // Shift+arrow: extend the rectangle from the anchor to the target cell.
+  function extendTo(cell) {
+    if (!cell || inHeader(cell)) { return; }
+    if (!anchor) { var a = activeCell(); anchor = domCoords(a && !inHeader(a) ? a : cell); }
+    setActive(cell);
+    var b = domCoords(cell);
+    var n = paintRange(anchor, b);
+    announceRange(anchor, b, n);
+    postNavigate(cell);
   }
 
-  function navigate(cell, key, ctrl) {
-    var tr = cell.closest("tr");
-    var inHead = tr.parentNode && tr.parentNode.tagName === "THEAD";
+  // Arrows clamp (no wrap — wrapping is Tab's job); the whole grid is in the DOM.
+  // Shift extends the cell range; Ctrl jumps to the region edge; a plain arrow
+  // moves and collapses the range.
+  function navigate(cell, key, ctrl, shift) {
     var rows = bodyRows();
+    if (!rows.length) { return false; }
+    var head = inHeader(cell);
+    var tr = cell.closest("tr");
+    var ri = head ? -1 : rows.indexOf(tr);
     var ci = cellsOf(tr).indexOf(cell);
-    if (key === "ArrowRight") { moveTo(tr, ci + 1); }
-    else if (key === "ArrowLeft") { moveTo(tr, ci - 1); }
-    else if (key === "ArrowDown") {
-      if (inHead) { if (rows.length) { moveTo(rows[0], ci); } }
-      else {
-        var ri = rows.indexOf(tr);
-        if (ri < rows.length - 1) { moveTo(rows[ri + 1], ci); }
-        else { focusGrid(); post({ action: "page", dir: "next", col: ci, fromRow: rowOf(cell) }); }
-      }
-    }
+    var ncols = cellsOf(rows[Math.max(0, ri)]).length;
+    var nr = ri, nc = ci, vertical = false, toHeader = false;
+    if (key === "ArrowRight") { nc = ctrl ? ncols - 1 : ci + 1; }
+    else if (key === "ArrowLeft") { nc = ctrl ? 0 : ci - 1; }
+    else if (key === "ArrowDown") { vertical = true; nr = head ? 0 : (ctrl ? rows.length - 1 : ri + 1); }
     else if (key === "ArrowUp") {
-      if (inHead) { announce("Top of grid"); }
-      else {
-        var ri2 = rows.indexOf(tr);
-        if (ri2 > 0) { moveTo(rows[ri2 - 1], ci); }
-        else { var hr = headRow(); if (hr) { moveTo(hr, ci); } }
-      }
+      vertical = true;
+      if (head) { announce("Top of grid"); return true; }
+      if (ri > 0) { nr = ctrl ? 0 : ri - 1; }
+      else if (shift) { nr = 0; }
+      else { toHeader = true; }
     }
-    else if (key === "Home") { moveTo(ctrl ? rows[0] : tr, 0); }
-    else if (key === "End") { moveTo(ctrl ? rows[rows.length - 1] : tr, cellsOf(tr).length - 1); }
-    else if (key === "PageDown") { focusGrid(); post({ action: "page", dir: "next", col: ci }); }
-    else if (key === "PageUp") { focusGrid(); post({ action: "page", dir: "prev", col: ci }); }
+    else if (key === "Home") { nc = 0; if (ctrl) { nr = 0; vertical = true; } }
+    else if (key === "End") { nc = ncols - 1; if (ctrl) { nr = rows.length - 1; vertical = true; } }
+    else if (key === "PageDown") { vertical = true; nr = Math.min(rows.length - 1, (head ? 0 : ri) + PAGE_ROWS); }
+    else if (key === "PageUp") { vertical = true; nr = Math.max(0, (head ? 0 : ri) - PAGE_ROWS); }
     else { return false; }
+    if (toHeader) {
+      var hr = headRow();
+      if (hr) { clearRange(); anchor = null; var hc = cellsOf(hr)[ci]; setActive(hc); announceCell(hc, true); }
+      return true;
+    }
+    nr = Math.max(0, Math.min(nr, rows.length - 1));
+    nc = Math.max(0, Math.min(nc, ncols - 1));
+    var target = cellsOf(rows[nr])[nc];
+    if (shift && key.indexOf("Arrow") === 0) { extendTo(target); } else { goTo(target, vertical); }
     return true;
   }
 
+  // Tab / Shift+Tab: move cell to cell, wrapping to the next/previous row;
+  // stop and announce at the grid corners (Tab never silently leaves — F6 does).
+  function tabMove(forward) {
+    var cell = activeCell();
+    if (!cell) { return; }
+    var rows = bodyRows();
+    if (inHeader(cell)) { if (rows.length) { goTo(cellsOf(rows[0])[0], true); } return; }
+    var tr = cell.closest("tr");
+    var ri = rows.indexOf(tr);
+    var cells = cellsOf(tr);
+    var ci = cells.indexOf(cell);
+    if (forward) {
+      if (ci < cells.length - 1) { goTo(cells[ci + 1], false); }
+      else if (ri < rows.length - 1) { goTo(cellsOf(rows[ri + 1])[0], false); }
+      else { announce("End of grid"); }
+    } else {
+      if (ci > 0) { goTo(cells[ci - 1], false); }
+      else if (ri > 0) { var pc = cellsOf(rows[ri - 1]); goTo(pc[pc.length - 1], false); }
+      else { announce("Start of grid"); }
+    }
+  }
+
+  function moveDown(cell) {
+    var rows = bodyRows();
+    var ri = rows.indexOf(cell.closest("tr"));
+    var ci = cellsOf(cell.closest("tr")).indexOf(cell);
+    if (ri >= 0 && ri < rows.length - 1) { goTo(cellsOf(rows[ri + 1])[ci], true); }
+    else { announce("Last row"); }
+  }
+
+  // F6: deliberate, documented way OUT of the grid (since Tab is owned). Blurring
+  // the table drops to browse mode, where normal Tab order resumes — so the user
+  // is never trapped (WCAG 2.1.2).
+  function leaveGrid() {
+    announce("Left grid");
+    var g = grid();
+    if (g) { try { g.blur(); } catch (e) {} }
+  }
+
+  // ----- bulk ROW selection (the checkbox column; for delete/move ops) --
+  // Tracked with a row class + the checkbox, NOT aria-selected, so it stays out
+  // of the cell-range system and plain navigation never speaks "selected".
+  function selectedRowCount() { return grid().querySelectorAll('tbody tr.wag-rowsel').length; }
   function toggleSelect(cell) {
     var row = rowOf(cell);
-    if (row < 0) { announce("Move to a data row to select"); return; }
+    if (row < 0) { return; }
     var tr = cell.closest("tr");
-    var now = tr.getAttribute("aria-selected") !== "true";
-    tr.setAttribute("aria-selected", now ? "true" : "false");
-    cellsOf(tr).forEach(function (c) { c.setAttribute("aria-selected", now ? "true" : "false"); });
-    var box = tr.querySelector('[data-select] input');  // keep the row checkbox in sync
+    var now = !tr.classList.contains("wag-rowsel");
+    if (now) { tr.classList.add("wag-rowsel"); } else { tr.classList.remove("wag-rowsel"); }
+    var box = tr.querySelector('[data-select] input');
     if (box) { box.checked = now; }
-    var count = grid().querySelectorAll('tbody tr[aria-selected="true"]').length;
+    var count = selectedRowCount();
     var label = tr.querySelector('[role="rowheader"]');
     label = label ? label.textContent.trim() : String(row + 1);
     announce("Row " + label + (now ? " selected" : " unselected") +
              ", " + count + (count === 1 ? " row" : " rows") + " selected");
     post({ action: "select", row: row, selected: now, count: count });
+  }
+
+  // ----- range commands: Ctrl+Space column, Shift+Space row, Ctrl+A all --
+  function selectColumn() {
+    var cell = activeCell(); if (!cell || inHeader(cell)) { return; }
+    var rows = bodyRows(); var ci = cellsOf(cell.closest("tr")).indexOf(cell);
+    var n = paintRange({ ri: 0, ci: ci }, { ri: rows.length - 1, ci: ci });
+    anchor = domCoords(cell);
+    var letter = coordOf(cellByDom(0, ci)).replace(/[0-9]+$/, "");
+    announce("Selected column " + letter + ", " + n + (n === 1 ? " cell" : " cells"));
+  }
+  function selectRowRange() {
+    var cell = activeCell(); if (!cell || inHeader(cell)) { return; }
+    var tr = cell.closest("tr"); var ri = bodyRows().indexOf(tr);
+    var last = cellsOf(tr).length - 1;
+    var n = paintRange({ ri: ri, ci: 0 }, { ri: ri, ci: last });
+    anchor = domCoords(cell);
+    announce("Selected row " + rowLabelOf(tr) + ", " + n + (n === 1 ? " cell" : " cells"));
+  }
+  function selectAllCells() {
+    var rows = bodyRows(); if (!rows.length) { return; }
+    var last = cellsOf(rows[rows.length - 1]).length - 1;
+    var n = paintRange({ ri: 0, ci: 0 }, { ri: rows.length - 1, ci: last });
+    announce("Selected all, " + n + (n === 1 ? " cell" : " cells"));
   }
 
   // ----- editing -------------------------------------------------------
@@ -214,7 +382,9 @@ _RUNTIME = r"""
     post({ action: "edit", row: rowOf(cell), col: colIndexOf(cell), value: value });
   }
 
-  function enterEdit(cell) {
+  // seed: optional first character (Excel type-to-replace) — when present the
+  // editor opens with that character instead of the cell's current value.
+  function enterEdit(cell, seed) {
     if (editing) { return; }
     // The leading selection checkbox toggles the row rather than opening an editor.
     if (cell.hasAttribute("data-select")) { toggleSelect(cell); return; }
@@ -226,19 +396,22 @@ _RUNTIME = r"""
     cell.innerHTML = "";
     cell.appendChild(el);
     editing = cell;
+    if (seed != null) {
+      if (el.tagName === "SELECT") {
+        var s = seed.toLowerCase();
+        for (var i = 0; i < el.options.length; i++) {
+          if (el.options[i].text.toLowerCase().indexOf(s) === 0) { el.selectedIndex = i; break; }
+        }
+      } else if (el.type !== "checkbox") { el.value = seed; }
+    }
     el.focus();
-    if (el.select) { try { el.select(); } catch (e) {} }
+    if (seed == null && el.select) { try { el.select(); } catch (e) {} }
   }
 
+  // mode: "down" (Enter), "tab"/"shifttab" (Tab during edit), or null (stay).
   // Always restore the grid as the focused element and the cell as its active
   // descendant *before* tearing the editor out, so focus never lands on body.
-  function leaveEdit(cell) {
-    editing = null;
-    focusGrid();
-    setActive(cell);
-  }
-
-  function commitEdit() {
+  function commitEdit(mode) {
     if (!editing) { return; }
     var cell = editing;
     var el = cell.querySelector(".wag-editor");
@@ -247,18 +420,29 @@ _RUNTIME = r"""
     post({ action: "edit", row: rowOf(cell), col: colIndexOf(cell), value: value });
     // Optimistic text; Python's setCell() delivers the authoritative value.
     cell.innerHTML = isCheck ? (value === "true" ? "Yes" : "No") : el.value;
-    leaveEdit(cell);
+    editing = null;
+    focusGrid();
+    setActive(cell);
+    if (mode === "down") { moveDown(cell); }
+    else if (mode === "tab") { tabMove(true); }
+    else if (mode === "shifttab") { tabMove(false); }
   }
 
   function cancelEdit() {
     if (!editing) { return; }
     var cell = editing;
     cell.innerHTML = cell.__orig != null ? cell.__orig : cell.innerHTML;
-    leaveEdit(cell);
+    editing = null;
+    focusGrid();
+    setActive(cell);
     announce("Edit cancelled");
   }
 
   // ----- key handling --------------------------------------------------
+
+  function isPrintable(e) {
+    return !e.ctrlKey && !e.altKey && !e.metaKey && typeof e.key === "string" && e.key.length === 1;
+  }
 
   document.addEventListener("keydown", function (e) {
     if (editing) {
@@ -266,9 +450,9 @@ _RUNTIME = r"""
       if (e.key === "Enter") {
         // A SELECT confirms its own option on Enter; commit on change instead.
         if (ed && ed.tagName === "SELECT") { return; }
-        e.preventDefault(); commitEdit();
+        e.preventDefault(); commitEdit("down");           // Excel: commit, move down
       } else if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
-      else if (e.key === "Tab") { commitEdit(); }  // commit, then let Tab move on
+      else if (e.key === "Tab") { e.preventDefault(); commitEdit(e.shiftKey ? "shifttab" : "tab"); }
       return;
     }
     var g = grid();
@@ -280,15 +464,33 @@ _RUNTIME = r"""
       return;
     }
     var k = e.key;
-    if (k === "F2" || k === "Enter") {
-      if (!e.repeat) { e.preventDefault(); enterEdit(cell); }
+    if (k === "Tab") { e.preventDefault(); tabMove(!e.shiftKey); return; }  // wrap, never leaves
+    if (k === "F6") { e.preventDefault(); leaveGrid(); return; }           // the way out
+    if (k === "Escape") { e.preventDefault(); leaveGrid(); return; }       // not editing -> leave
+    if (k === "F2") { if (!e.repeat) { e.preventDefault(); enterEdit(cell); } return; }
+    if (k === "Enter") {
+      if (!e.repeat) {
+        e.preventDefault();
+        if (cell.getAttribute("data-editable") === "1" || cell.hasAttribute("data-select")) {
+          enterEdit(cell);
+        } else { post({ action: "activate", row: rowOf(cell), col: colIndexOf(cell) }); }
+      }
       return;
     }
-    if (k === " " || k === "Spacebar") { e.preventDefault(); toggleSelect(cell); return; }
+    if (k === "a" || k === "A") {
+      if (e.ctrlKey && !e.shiftKey && !e.altKey) { e.preventDefault(); selectAllCells(); return; }
+    }
+    if (k === " " || k === "Spacebar") {
+      e.preventDefault();
+      if (e.ctrlKey) { selectColumn(); }           // Ctrl+Space: column range
+      else if (e.shiftKey) { selectRowRange(); }   // Shift+Space: row range
+      else { toggleSelect(cell); }                 // Space: bulk row (checkbox)
+      return;
+    }
     if (k === "Delete") {
       e.preventDefault();
       var sel = Array.prototype.slice.call(
-        g.querySelectorAll('tbody tr[aria-selected="true"]'))
+        g.querySelectorAll('tbody tr.wag-rowsel'))
         .map(function (tr) { return parseInt(tr.getAttribute("data-row"), 10); });
       if (!sel.length) { var r = rowOf(cell); if (r >= 0) { sel = [r]; } }
       if (sel.length) { post({ action: "delete", rows: sel }); }
@@ -299,7 +501,13 @@ _RUNTIME = r"""
       post({ action: "context", row: rowOf(cell), col: colIndexOf(cell) });
       return;
     }
-    if (navigate(cell, k, e.ctrlKey)) { e.preventDefault(); }
+    // Type-to-replace (Excel): a printable key on an editable cell starts editing
+    // with that character. Space is reserved for selection, not editing.
+    if (isPrintable(e) && e.key !== " " && cell.getAttribute("data-editable") === "1") {
+      var meta = cols[colIndexOf(cell)] || {};
+      if (meta.editor !== "checkbox") { e.preventDefault(); enterEdit(cell, e.key); return; }
+    }
+    if (navigate(cell, k, e.ctrlKey, e.shiftKey)) { e.preventDefault(); }
   });
 
   // A SELECT commits when its value changes; any editor commits if focus
@@ -374,11 +582,28 @@ _RUNTIME = r"""
       if (tr) { tr.parentNode.removeChild(tr); }
     },
     announce: function (t, assertive) { announce(t, !!assertive); },
-    // Move the active descendant to an absolute cell (after a page change).
+    // Move the active descendant to an absolute cell (after a re-render). A plain
+    // landing: collapse any range and re-anchor.
     focusCell: function (row, col) {
       var c = document.getElementById("wag-r" + row + "-c" + (col || 0));
       if (!c) { var tr = grid() && grid().querySelector("tbody tr"); c = tr && tr.cells[col || 0]; }
-      if (c) { focusGrid(); setActive(c); }
+      if (c) { focusGrid(); setActive(c); clearRange(); anchor = inHeader(c) ? null : domCoords(c); }
+    },
+    // Open the editor on an absolute cell (used by the host's context-menu "Edit").
+    editCell: function (row, col) {
+      var c = document.getElementById("wag-r" + row + "-c" + (col || 0));
+      if (c) { focusGrid(); setActive(c); enterEdit(c); }
+    },
+    // Make the grid LIVE: put real DOM focus on the table and the cursor on a
+    // cell (default the first, or the given one), and announce it. The host
+    // calls this on open / focus() so arrows and Tab work immediately, without
+    // the user having to tab onto the table first.
+    enterGrid: function (row, col) {
+      var g = grid(); if (!g) { return; }
+      var c = (row != null) ? document.getElementById("wag-r" + row + "-c" + (col || 0)) : null;
+      if (!c) { c = g.querySelector('tbody [role="gridcell"], tbody [role="rowheader"]'); }
+      focusGrid();
+      if (c) { setActive(c); clearRange(); anchor = inHeader(c) ? null : domCoords(c); announceCell(c, true); }
     }
   };
 
