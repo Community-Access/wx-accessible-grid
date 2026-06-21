@@ -45,7 +45,9 @@ def test_grid_skeleton_and_counts():
     html = render_grid(_Model(250), label="Channels", first=0, last=99)
     assert 'id="wag-grid"' in html
     assert 'role="grid"' in html
-    assert 'tabindex="0"' in html  # the table is the single focusable element
+    # model B: the table is NOT a tab stop; cells carry the roving tabindex
+    assert 'role="grid" aria-label' in html  # no tabindex on the table element
+    assert 'tabindex="-1"' in html
     assert 'aria-label="Channels"' in html
     assert 'aria-rowcount="251"' in html  # 250 rows + header
     assert 'aria-colcount="5"' in html
@@ -71,9 +73,9 @@ def test_row_and_cell_semantics():
     assert 'aria-rowindex="2"' in rows
     assert '<th role="rowheader" scope="row"' in rows
     assert 'role="gridcell"' in rows
-    # cells carry stable ids and NO tabindex (focus lives on the table)
+    # cells carry stable ids and the roving tabindex (=-1; runtime promotes one to 0)
     assert f'id="{cell_id(0, 1)}"' in rows
-    assert "tabindex" not in rows
+    assert 'tabindex="-1"' in rows
     # non-editable row-header cell is marked read-only
     assert 'aria-readonly="true"' in rows
 
@@ -128,6 +130,35 @@ def test_bulk_selected_row_uses_class_not_aria_selected():
     assert rows.count('class="wag-rowsel"') == 1
     # unselected rows have no class
     assert 'data-row="0" class' not in rows
+
+
+def test_editor_type_suffix_in_cell_name():
+    # Each editable data cell carries a visually-hidden control-type suffix span so
+    # VoiceOver speaks it as part of the cell's accessible name ("…, edit box").
+    rows = render_rows(_Model(10), 0, 0, selected=set())
+    assert '<span class="wag-sr-only">, edit box</span>' in rows   # name (text)
+    assert '<span class="wag-sr-only">, combo box</span>' in rows  # mode (combo)
+    assert '<span class="wag-sr-only">, checkbox</span>' in rows   # active (checkbox)
+    assert '<span class="wag-sr-only">, slider</span>' in rows     # vol (slider)
+    # the non-editable row-header (#) gets NO suffix (it is an identifier)
+    assert '<th role="rowheader" scope="row" id="wag-r0-c0"' in rows
+    head_cell = rows.split('id="wag-r0-c0"', 1)[1].split("</th>", 1)[0]
+    assert "wag-sr-only" not in head_cell
+
+
+def test_readonly_cell_announces_read_only():
+    # A non-editable data column (editor "none", not a row header) says "read only".
+    class RO(_Model):
+        def __init__(self):
+            super().__init__(5)
+            self._cols = [
+                Column("num", "#", editor=NONE, is_row_header=True),
+                Column("calc", "Computed", editor=NONE),  # read-only data cell
+                Column("name", "Name"),
+            ]
+
+    rows = render_rows(RO(), 0, 0, selected=set())
+    assert '<span class="wag-sr-only">, read only</span>' in rows
 
 
 def test_render_never_emits_aria_selected():

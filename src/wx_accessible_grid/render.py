@@ -6,14 +6,14 @@ speaks the row header; move across a row and it speaks the column header; it
 knows "row 105 of 10,000" from ``aria-rowcount`` even though only one page is in
 the DOM. ``role="grid"`` then layers *application* navigation on top.
 
-Focus model: the **table** is the single focusable element (``tabindex="0"``)
-and owns ``aria-activedescendant`` pointing at the active cell's id. This is the
-pattern NVDA reliably enters and stays in focus mode for — a focused
-``role="gridcell"`` with a roving ``tabindex`` does **not** dependably trigger
-focus mode in WebView2, which would leave arrow keys dead. So cells carry stable
-ids but no ``tabindex``; the runtime moves ``aria-activedescendant`` instead of
-calling ``cell.focus()``, which also means edits and deletes never bounce focus
-through ``document.body`` (and out of focus mode).
+Focus model (model B — roving tabindex with REAL DOM focus): every cell carries
+``tabindex="-1"`` and a stable id; the runtime promotes the active cell to
+``tabindex="0"`` and calls ``cell.focus()`` on it, so both VoiceOver and NVDA
+follow the real cursor and read each cell on every arrow. There is no
+``aria-activedescendant`` (its support is weak in VoiceOver, which left the
+reader not following plain arrows). Focus always lands on the gridcell itself,
+never a child element (NVDA #8395 — focusing a child flips NVDA to browse mode and
+kills the arrows); only the editor input takes focus, while editing.
 
 Only one page of rows is ever in the DOM. ``aria-rowindex`` on each row is the
 *absolute* 1-based position (header row is 1, the first data row is 2), so paging
@@ -24,10 +24,40 @@ from __future__ import annotations
 
 from html import escape
 
-from wx_accessible_grid.model import CHECKBOX, SLIDER, STEPPER, GridModel
+from wx_accessible_grid.model import CHECKBOX, COMBO, SLIDER, STEPPER, TEXT, GridModel
 
 # id helpers — kept in one place so the renderer and the runtime agree.
 GRID_ID = "wag-grid"
+
+# Spoken control type per editor. We surface it INSIDE the cell as a
+# visually-hidden suffix span so it becomes part of the cell's accessible NAME and
+# VoiceOver speaks it on every VO+arrow move (e.g. "Frequency, 146.520, edit box").
+# aria-roledescription on a gridcell is read inconsistently by VoiceOver, and the
+# accessible name is the one channel both VoiceOver and NVDA reliably read, so the
+# suffix span is the source of truth; the JS runtime mirrors the same word into its
+# live-region announcement for redundancy. Read-only data cells say "read only".
+_EDITOR_SUFFIX = {
+    TEXT: "edit box",
+    COMBO: "combo box",
+    CHECKBOX: "checkbox",
+    SLIDER: "slider",
+    STEPPER: "stepper",
+}
+# Non-editable data cells (not the row-header) announce that they are read only.
+_READONLY_SUFFIX = "read only"
+
+
+def _editor_suffix(model: GridModel, row: int, col) -> str:
+    """The spoken control-type word for a cell, or "" when it should be silent.
+
+    The row-header (channel number / id) is left without a suffix: it is an
+    identifier, not a control, and gets spoken as the row label on vertical moves.
+    """
+    if col.is_row_header:
+        return ""
+    if not model.is_editable(row, col.name):
+        return _READONLY_SUFFIX
+    return _EDITOR_SUFFIX.get(col.editor, "")
 
 
 def cell_id(row: int, col_index: int) -> str:
@@ -55,13 +85,14 @@ def _cell_attrs(model: GridModel, row: int, col, col_index: int) -> str:
 def _select_cell(row: int, label: str, sel: bool, colindex: int) -> str:
     """The leading row-selection checkbox cell (a real checkbox, so it both looks
     like one for sighted users and announces its state to a screen reader). It is
-    toggled with Space/Enter on the cell; the table keeps focus, so the input is
-    tabindex=-1 and not a separate tab stop. Bulk row selection rides on the
-    checkbox + the row's ``wag-rowsel`` class, NOT ``aria-selected`` (kept
-    exclusively for cell-range selection so plain arrows stay quiet)."""
+    toggled with Space/Enter on the cell; the cell itself takes the roving focus,
+    so the inner input is tabindex=-1 and not a separate tab stop. Bulk row
+    selection rides on the checkbox + the row's ``wag-rowsel`` class, NOT
+    ``aria-selected`` (kept exclusively for cell-range selection)."""
     checked = " checked" if sel else ""
     return (
-        f'<td role="gridcell" id="wag-r{row}-csel" data-select="1" aria-colindex="{colindex}">'
+        f'<td role="gridcell" id="wag-r{row}-csel" data-select="1" tabindex="-1" '
+        f'aria-colindex="{colindex}">'
         f'<input type="checkbox" tabindex="-1" aria-label="Select row {escape(label)}"{checked}>'
         f"</td>"
     )
@@ -96,14 +127,22 @@ def render_rows(
         for ci, col in enumerate(cols):
             text = escape(model.display(row, col.name))
             cid = cell_id(row, ci)
+            # tabindex=-1 on every cell; the runtime promotes the active cell to 0
+            # (roving tabindex, model B real DOM focus).
             common = (
-                f'id="{cid}" aria-colindex="{ci + 1 + offset}" '
+                f'id="{cid}" aria-colindex="{ci + 1 + offset}" tabindex="-1" '
                 f"{_cell_attrs(model, row, col, ci)}"
             )
+            # Visually-hidden control-type suffix, part of the cell's accessible
+            # name so VoiceOver speaks it on navigation ("…, edit box"). The editor
+            # replaces the cell's children while editing, so the span is naturally
+            # absent during edit and restored from cell.__orig on cancel.
+            suffix = _editor_suffix(model, row, col)
+            tail = f'<span class="wag-sr-only">, {escape(suffix)}</span>' if suffix else ""
             if col.is_row_header:
-                cells.append(f'<th role="rowheader" scope="row" {common}>{text}</th>')
+                cells.append(f'<th role="rowheader" scope="row" {common}>{text}{tail}</th>')
             else:
-                cells.append(f'<td role="gridcell" {common}>{text}</td>')
+                cells.append(f'<td role="gridcell" {common}>{text}{tail}</td>')
         cls = ' class="wag-rowsel"' if rowsel else ""
         out.append(
             f'<tr role="row" aria-rowindex="{row + 2}" data-row="{row}"{cls}>'
@@ -154,7 +193,7 @@ def render_grid(
     )
     return (
         f"{live}"
-        f'<table id="{GRID_ID}" class="wag-grid" role="grid" tabindex="0" '
+        f'<table id="{GRID_ID}" class="wag-grid" role="grid" '
         f'aria-label="{escape(label)}" aria-rowcount="{total + 1}" '
         f'aria-colcount="{len(cols) + offset}" aria-multiselectable="true">'
         f"<caption>{caption}</caption>"

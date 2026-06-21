@@ -174,6 +174,25 @@ class AccessibleGrid:
         if self._awv.using_webview:
             self._awv.run_js(f"window.__wag&&window.__wag.editCell({row},{col});")
 
+    def select_row(self, row: int) -> None:
+        """Add a row to the bulk selection WITHOUT the checkbox column.
+
+        The checkbox-free path: call this from a context-menu item (the route that
+        survives VoiceOver, which intercepts plain arrows and Shift+arrow before
+        they reach the page). It selects the same way Space does — the row joins
+        :meth:`selected_rows` and fires ``on_selection_changed`` — and becomes the
+        anchor for :meth:`select_row_range`."""
+        if self._awv.using_webview:
+            self._awv.run_js(f"window.__wag&&window.__wag.selectRow({int(row)});")
+
+    def select_row_range(self, row: int) -> None:
+        """Select every row from the last selected row through ``row``, inclusive.
+
+        The checkbox-free range counterpart to :meth:`select_row`: pick a row,
+        choose "Select this row", move to another, choose "Select range to here"."""
+        if self._awv.using_webview:
+            self._awv.run_js(f"window.__wag&&window.__wag.selectRowRange({int(row)});")
+
     def show_context_menu(self, items: list[ContextMenuItem]) -> None:
         """Pop up a native ``wx.Menu`` of :class:`ContextMenuItem` on the grid and
         return focus to the cell afterwards. Call this from your ``on_context``
@@ -194,11 +213,20 @@ class AccessibleGrid:
         wx.CallAfter(self.focus)
 
     def default_context_items(self, row: int, col: int) -> list[ContextMenuItem]:
-        """A ready-made Edit + Delete menu for hosts that just want the basics."""
-        return [
-            ContextMenuItem("Edit (F2)", lambda: self.edit_cell(row, col)),
-            ContextMenuItem("Delete (Del)", lambda: self._delete_rows([row])),
-        ]
+        """A ready-made Edit + Delete menu for hosts that just want the basics.
+
+        When the grid has the row-select column, it also offers a checkbox-free way
+        to select a row and a range (the path that works under VoiceOver, which eats
+        plain arrows and Shift+arrow), so selection never depends on reaching the
+        checkbox."""
+        items = [ContextMenuItem("Edit (F2)", lambda: self.edit_cell(row, col))]
+        if self._row_select:
+            items.append(ContextMenuItem("Select this row", lambda: self.select_row(row)))
+            items.append(
+                ContextMenuItem("Select range to here", lambda: self.select_row_range(row))
+            )
+        items.append(ContextMenuItem("Delete (Del)", lambda: self._delete_rows([row])))
+        return items
 
     # -- paging math -------------------------------------------------------
 

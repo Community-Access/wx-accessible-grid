@@ -144,8 +144,12 @@ class DemoFrame(wx.Frame):
         # Find the column index for edit_cell; fall back to the first column.
         names = [c.name for c in self.model.columns()]
         col = names.index(column) if column in names else 0
+        # The checkbox-free selection path (works under VoiceOver) lives right in the
+        # context menu, alongside Edit and Delete.
         self.grid.show_context_menu([
             ContextMenuItem(f"Edit {column} (F2)", lambda: self.grid.edit_cell(row, col)),
+            ContextMenuItem("Select this row", lambda: self.grid.select_row(row)),
+            ContextMenuItem("Select range to here", lambda: self.grid.select_row_range(row)),
             ContextMenuItem(f"Delete row {row + 1} (Del)",
                             lambda: self.grid._delete_rows([row])),
         ])

@@ -91,8 +91,46 @@ _RUNTIME = r"""
   }
   function headRow() { var g = grid(); return g && g.tHead ? g.tHead.rows[0] : null; }
   function cellsOf(tr) { return tr ? Array.prototype.slice.call(tr.cells) : []; }
-  function activeCell() { return activeId ? document.getElementById(activeId) : null; }
+  function isCell(el) {
+    if (!el || !el.getAttribute) { return false; }
+    var r = el.getAttribute("role");
+    return (r === "gridcell" || r === "rowheader") && !!(el.closest && el.closest("#wag-grid"));
+  }
+  // Prefer the real focused cell (model B uses real DOM focus), else the tracked id.
+  function activeCell() {
+    var ae = document.activeElement;
+    if (isCell(ae)) { return ae; }
+    return activeId ? document.getElementById(activeId) : null;
+  }
   function colIndexOf(cell) { return parseInt(cell.getAttribute("data-col"), 10) || 0; }
+  // The cell's VALUE text only, excluding the visually-hidden control-type suffix
+  // span (rendered as ", edit box" etc. so VoiceOver speaks the control type as
+  // part of the cell name). Everything that needs the raw value — the editor seed,
+  // the live-region value, the checkbox optimistic text — reads through this so the
+  // suffix never leaks into a value or gets double-spoken.
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function suffixSpan(cell) { return cell.querySelector(":scope > .wag-sr-only"); }
+  function cellText(cell) {
+    var sx = suffixSpan(cell);
+    if (!sx) { return cell.textContent.trim(); }
+    var t = "";
+    for (var i = 0; i < cell.childNodes.length; i++) {
+      var n = cell.childNodes[i];
+      if (n !== sx) { t += n.textContent; }
+    }
+    return t.trim();
+  }
+  // Set the cell's visible value while KEEPING its suffix span intact (so the
+  // control-type word survives an authoritative setCell / optimistic edit text).
+  function setCellText(cell, value) {
+    var sx = suffixSpan(cell);
+    if (!sx) { cell.textContent = value; return; }
+    var n = cell.childNodes, i;
+    for (i = n.length - 1; i >= 0; i--) { if (n[i] !== sx) { cell.removeChild(n[i]); } }
+    cell.insertBefore(document.createTextNode(value), sx);
+  }
   function rowOf(cell) {
     var tr = cell.closest("tr"); var r = tr && tr.getAttribute("data-row");
     return r == null ? -1 : parseInt(r, 10);   // -1 means the header row
@@ -102,21 +140,23 @@ _RUNTIME = r"""
     return !!(tr && tr.parentNode && tr.parentNode.tagName === "THEAD");
   }
 
-  // Make a cell the active descendant — no .focus() on the cell, so NVDA stays
-  // in focus mode on the table and focus never transits document.body.
+  // Model B: roving tabindex with REAL DOM focus on the gridcell, so VoiceOver
+  // and NVDA both follow the cursor and read each cell on every arrow. The active
+  // cell gets tabindex=0 and .focus(); all others tabindex=-1; no
+  // aria-activedescendant. CRITICAL: focus the CELL itself, never a child element
+  // (NVDA #8395 — focusing a child flips NVDA to browse mode and kills the
+  // arrows). The one exception is editing, where the editor input must hold focus.
   function setActive(cell) {
     if (!cell) { return; }
+    var g = grid(); if (!g) { return; }
+    var prev = activeId ? document.getElementById(activeId) : null;
+    if (prev && prev !== cell) { prev.setAttribute("tabindex", "-1"); prev.classList.remove("wag-active"); }
     activeId = cell.id;
-    var g = grid();
-    if (g) {
-      g.setAttribute("aria-activedescendant", cell.id);
-      var prev = g.querySelector(".wag-active");
-      if (prev && prev !== cell) { prev.classList.remove("wag-active"); }
-    }
+    cell.setAttribute("tabindex", "0");
     cell.classList.add("wag-active");
+    if (!editing) { try { cell.focus(); } catch (e) {} }
     try { cell.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch (e) {}
   }
-  function focusGrid() { var g = grid(); if (g) { g.focus(); } }
 
   // ----- coordinates + announcements -----------------------------------
   function rowLabelOf(tr) {
@@ -132,17 +172,39 @@ _RUNTIME = r"""
     while (ci > 0) { letter = String.fromCharCode(65 + (ci - 1) % 26) + letter; ci = Math.floor((ci - 1) / 26); }
     return letter + (r + 1);
   }
-  // A cell's spoken name IS its value — no "column N" noise (the table's column
-  // and row headers give that for free). A vertical move leads with the row
-  // label ("Channel 5"); plain moves never speak about selection.
+  // The column header for a cell, from the pushed column metadata.
+  function colHeader(cell) {
+    if (cell.hasAttribute("data-select")) { return "Select"; }
+    var d = cell.getAttribute("data-col");
+    if (d != null && cols[parseInt(d, 10)]) { return cols[parseInt(d, 10)].label || ""; }
+    return "";
+  }
+  // The live-region announcement ALWAYS carries the header explicitly (we don't
+  // trust the screen reader to add it — VoiceOver often doesn't). Horizontal:
+  // "{header}, {value}". Vertical: "{row label}, {header}, {value}". A vertical
+  // move leads with the row label ("Channel 5"); plain moves never speak about
+  // selection.
+  // The spoken control type for a cell ("edit box", "combo box", "read only"…),
+  // taken from the cell's hidden suffix span (the renderer's source of truth) so
+  // the live-region announcement matches what VoiceOver reads from the name.
+  function editorWord(cell) {
+    var sx = suffixSpan(cell);
+    return sx ? sx.textContent.replace(/^,\s*/, "").trim() : "";
+  }
   function announceCell(cell, vertical) {
     if (!cell) { return; }
     if (inHeader(cell)) { announce(cell.textContent.trim() + ", column header"); return; }
     var tr = cell.closest("tr");
-    var value = cell.textContent.trim();
-    if (cell.getAttribute("role") === "rowheader") { announce(rowLabelOf(tr)); return; }
-    if (vertical) { announce(rowLabelOf(tr) + (value ? ", " + value : "")); }
-    else { announce(value || coordOf(cell)); }
+    var value = cellText(cell);
+    var hdr = colHeader(cell);
+    var word = editorWord(cell);          // appended so VO + the live region agree
+    var tail = word ? ", " + word : "";
+    if (cell.getAttribute("role") === "rowheader") {
+      announce(vertical ? rowLabelOf(tr) : ((hdr ? hdr + ", " : "") + value + tail));
+      return;
+    }
+    var hv = (hdr ? hdr + ", " : "") + (value || coordOf(cell)) + tail;
+    announce(vertical ? (rowLabelOf(tr) + ", " + hv) : hv);
   }
   function postNavigate(cell) {
     var row = rowOf(cell), col = colIndexOf(cell);
@@ -275,33 +337,78 @@ _RUNTIME = r"""
     else { announce("Last row"); }
   }
 
-  // F6: deliberate, documented way OUT of the grid (since Tab is owned). Blurring
-  // the table drops to browse mode, where normal Tab order resumes — so the user
-  // is never trapped (WCAG 2.1.2).
+  // F6 / Escape (when not editing): the documented way OUT of the grid (since Tab
+  // is owned). Blur the active cell so normal Tab order resumes — the user is
+  // never trapped (WCAG 2.1.2). The host may also move focus elsewhere.
   function leaveGrid() {
     announce("Left grid");
-    var g = grid();
-    if (g) { try { g.blur(); } catch (e) {} }
+    var a = activeCell();
+    if (a) { try { a.blur(); } catch (e) {} }
   }
 
   // ----- bulk ROW selection (the checkbox column; for delete/move ops) --
   // Tracked with a row class + the checkbox, NOT aria-selected, so it stays out
   // of the cell-range system and plain navigation never speaks "selected".
+  var rowSelAnchor = null;   // last row index toggled ON, for "select range to here"
   function selectedRowCount() { return grid().querySelectorAll('tbody tr.wag-rowsel').length; }
+  function rowLabelFor(tr, row) {
+    var label = tr.querySelector('[role="rowheader"]');
+    return label ? label.textContent.trim() : String(row + 1);
+  }
+  // Set one row's selected state (class + checkbox + Python). Pure mechanism, no
+  // announcement, so it can be reused by the toggle key and the context-menu
+  // commands (which compose their own, range-aware, announcement).
+  function setRowSelected(tr, on) {
+    if (!tr) { return; }
+    if (on) { tr.classList.add("wag-rowsel"); } else { tr.classList.remove("wag-rowsel"); }
+    var box = tr.querySelector('[data-select] input');
+    if (box) { box.checked = on; }
+    var row = parseInt(tr.getAttribute("data-row"), 10);
+    if (on) { rowSelAnchor = row; }
+    post({ action: "select", row: row, selected: on, count: selectedRowCount() });
+  }
+  function trByRow(row) {
+    return grid().querySelector('tbody tr[data-row="' + row + '"]');
+  }
   function toggleSelect(cell) {
     var row = rowOf(cell);
     if (row < 0) { return; }
     var tr = cell.closest("tr");
     var now = !tr.classList.contains("wag-rowsel");
-    if (now) { tr.classList.add("wag-rowsel"); } else { tr.classList.remove("wag-rowsel"); }
-    var box = tr.querySelector('[data-select] input');
-    if (box) { box.checked = now; }
+    setRowSelected(tr, now);
     var count = selectedRowCount();
-    var label = tr.querySelector('[role="rowheader"]');
-    label = label ? label.textContent.trim() : String(row + 1);
-    announce("Row " + label + (now ? " selected" : " unselected") +
+    announce("Row " + rowLabelFor(tr, row) + (now ? " selected" : " unselected") +
              ", " + count + (count === 1 ? " row" : " rows") + " selected");
-    post({ action: "select", row: row, selected: now, count: count });
+  }
+  // Context-menu path (the route that works under VoiceOver, where plain arrows and
+  // Shift+arrow are intercepted by VO and never reach the page). "Select this row"
+  // adds the given row to the bulk selection and sets the range anchor.
+  function selectRow(row) {
+    var tr = trByRow(row);
+    if (!tr) { return; }
+    setRowSelected(tr, true);
+    var count = selectedRowCount();
+    announce("Row " + rowLabelFor(tr, row) + " selected, " +
+             count + (count === 1 ? " row" : " rows") + " selected");
+  }
+  // "Select range to here": select every row from the last selected row (anchor)
+  // through the given row, inclusive — a checkbox-free way to select a span.
+  function selectRowRangeTo(row) {
+    var rows = bodyRows();
+    if (!rows.length) { return; }
+    var byIndex = {};
+    for (var i = 0; i < rows.length; i++) {
+      byIndex[parseInt(rows[i].getAttribute("data-row"), 10)] = rows[i];
+    }
+    var start = (rowSelAnchor != null && byIndex[rowSelAnchor] != null) ? rowSelAnchor : row;
+    var lo = Math.min(start, row), hi = Math.max(start, row);
+    for (var r = lo; r <= hi; r++) { if (byIndex[r]) { setRowSelected(byIndex[r], true); } }
+    rowSelAnchor = start;   // setRowSelected moved it; restore the span's anchor
+    var count = selectedRowCount();
+    var trEnd = byIndex[row];
+    announce("Selected rows " + rowLabelFor(byIndex[lo], lo) + " to " +
+             rowLabelFor(byIndex[hi], hi) + ", " +
+             count + (count === 1 ? " row" : " rows") + " selected");
   }
 
   // ----- range commands: Ctrl+Space column, Shift+Space row, Ctrl+A all --
@@ -334,7 +441,7 @@ _RUNTIME = r"""
     var meta = cols[colIndexOf(cell)] || {};
     var kind = meta.editor || "text";
     var raw = cell.getAttribute("data-raw");
-    var value = raw != null ? raw : cell.textContent.trim();
+    var value = raw != null ? raw : cellText(cell);
     var el;
     if (kind === "combo") {
       el = document.createElement("select");
@@ -376,7 +483,7 @@ _RUNTIME = r"""
     var on = !(raw === "true" || raw === "1" || raw === "yes");
     var value = on ? "true" : "false";
     cell.setAttribute("data-raw", value);
-    cell.textContent = on ? "Yes" : "No";  // optimistic; setCell delivers the truth
+    setCellText(cell, on ? "Yes" : "No");  // optimistic; setCell delivers the truth (keeps suffix)
     // The single confirmation comes back through setCell (model round-trip), so
     // the screen reader doesn't double-speak.
     post({ action: "edit", row: rowOf(cell), col: colIndexOf(cell), value: value });
@@ -392,9 +499,17 @@ _RUNTIME = r"""
     var meta0 = cols[colIndexOf(cell)] || {};
     if (meta0.editor === "checkbox") { toggleCheckbox(cell, meta0); return; }
     cell.__orig = cell.innerHTML;
+    // Remember the hidden control-type suffix so commitEdit can restore it after it
+    // rebuilds the cell's value (cancelEdit restores it for free via __orig).
+    var sx0 = suffixSpan(cell);
+    cell.__suffix = sx0 ? sx0.outerHTML : "";
     var el = buildEditor(cell);
     cell.innerHTML = "";
     cell.appendChild(el);
+    // Capture-phase listener on the editor itself: a native <select> consumes
+    // Escape/Tab to close its dropdown, so the document listener would never see
+    // them. Capturing here lets the grid cancel/commit on a single Escape.
+    el.addEventListener("keydown", onEditorKeydown, true);
     editing = cell;
     if (seed != null) {
       if (el.tagName === "SELECT") {
@@ -418,11 +533,12 @@ _RUNTIME = r"""
     var value = readEditor(el);
     var isCheck = el.type === "checkbox";
     post({ action: "edit", row: rowOf(cell), col: colIndexOf(cell), value: value });
-    // Optimistic text; Python's setCell() delivers the authoritative value.
-    cell.innerHTML = isCheck ? (value === "true" ? "Yes" : "No") : el.value;
+    // Optimistic text; Python's setCell() delivers the authoritative value. Re-append
+    // the hidden control-type suffix so the cell still announces "…, edit box".
+    var shown = isCheck ? (value === "true" ? "Yes" : "No") : el.value;
+    cell.innerHTML = escapeHtml(shown) + (cell.__suffix || "");
     editing = null;
-    focusGrid();
-    setActive(cell);
+    setActive(cell);   // editing cleared first, so this re-focuses the CELL
     if (mode === "down") { moveDown(cell); }
     else if (mode === "tab") { tabMove(true); }
     else if (mode === "shifttab") { tabMove(false); }
@@ -433,8 +549,7 @@ _RUNTIME = r"""
     var cell = editing;
     cell.innerHTML = cell.__orig != null ? cell.__orig : cell.innerHTML;
     editing = null;
-    focusGrid();
-    setActive(cell);
+    setActive(cell);   // editing cleared first, so this re-focuses the CELL
     announce("Edit cancelled");
   }
 
@@ -444,19 +559,42 @@ _RUNTIME = r"""
     return !e.ctrlKey && !e.altKey && !e.metaKey && typeof e.key === "string" && e.key.length === 1;
   }
 
+  // The keys that control an open editor: Escape cancels, Tab commits + moves,
+  // Enter commits + drops down (except a SELECT, which confirms its own option on
+  // Enter — there we commit via the change event instead). Returns true if it
+  // handled the key. Shared by the document listener AND a capture-phase listener
+  // bound to the editor element, so a native <select> can't swallow Escape/Tab to
+  // close its own dropdown before the grid sees it (one Escape always exits).
+  function handleEditorKey(e, ed) {
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); cancelEdit(); return true; }
+    if (e.key === "Tab") {
+      e.preventDefault(); e.stopPropagation();
+      commitEdit(e.shiftKey ? "shifttab" : "tab"); return true;
+    }
+    if (e.key === "Enter") {
+      if (ed && ed.tagName === "SELECT") { return false; }  // SELECT commits via change
+      e.preventDefault(); e.stopPropagation(); commitEdit("down"); return true;
+    }
+    return false;
+  }
+
+  // Bound to the editor in capture phase so Escape/Tab/Enter reach the grid before
+  // the control's own handling (a <select> otherwise eats Escape to shut its list).
+  function onEditorKeydown(e) {
+    if (!editing) { return; }
+    handleEditorKey(e, e.currentTarget);
+  }
+
   document.addEventListener("keydown", function (e) {
     if (editing) {
       var ed = editing.querySelector(".wag-editor");
-      if (e.key === "Enter") {
-        // A SELECT confirms its own option on Enter; commit on change instead.
-        if (ed && ed.tagName === "SELECT") { return; }
-        e.preventDefault(); commitEdit("down");           // Excel: commit, move down
-      } else if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
-      else if (e.key === "Tab") { e.preventDefault(); commitEdit(e.shiftKey ? "shifttab" : "tab"); }
+      handleEditorKey(e, ed);
       return;
     }
     var g = grid();
-    if (!g || document.activeElement !== g) { return; }
+    // Model B: a gridcell holds real focus, so the gate is "focus is in the grid"
+    // (the active cell), not "the table is focused".
+    if (!g || !g.contains(document.activeElement)) { return; }
     var cell = activeCell();
     if (!cell) {
       var first = g.querySelector('tbody [role="gridcell"], tbody [role="rowheader"]');
@@ -543,7 +681,7 @@ _RUNTIME = r"""
     setCell: function (row, col, display, message) {
       var c = document.getElementById("wag-r" + row + "-c" + col);
       if (c) {
-        c.textContent = display;
+        setCellText(c, display);  // keeps the hidden control-type suffix span intact
         // keep data-raw in step for editors (checkbox/slider/stepper) that read it
         if (c.hasAttribute("data-raw")) {
           c.setAttribute("data-raw", display === "Yes" ? "true" : display === "No" ? "false" : display);
@@ -572,52 +710,50 @@ _RUNTIME = r"""
     setRows: function (html, focusRow, focusCol, rowcount) {
       var g = grid();
       if (!g || !g.tBodies.length) { return; }
-      g.tBodies[0].innerHTML = html;
+      g.tBodies[0].innerHTML = html;        // new cells render tabindex=-1
       if (rowcount != null) { g.setAttribute("aria-rowcount", rowcount); }
-      g.focus();
-      window.__wag.focusCell(focusRow, focusCol);
+      window.__wag.focusCell(focusRow, focusCol);   // sets the roving 0 + real focus
     },
     removeRow: function (row) {
       var tr = document.querySelector('#wag-grid tbody tr[data-row="' + row + '"]');
       if (tr) { tr.parentNode.removeChild(tr); }
     },
     announce: function (t, assertive) { announce(t, !!assertive); },
-    // Move the active descendant to an absolute cell (after a re-render). A plain
+    // Move the roving focus to an absolute cell (after a re-render). A plain
     // landing: collapse any range and re-anchor.
     focusCell: function (row, col) {
       var c = document.getElementById("wag-r" + row + "-c" + (col || 0));
       if (!c) { var tr = grid() && grid().querySelector("tbody tr"); c = tr && tr.cells[col || 0]; }
-      if (c) { focusGrid(); setActive(c); clearRange(); anchor = inHeader(c) ? null : domCoords(c); }
+      if (c) { setActive(c); clearRange(); anchor = inHeader(c) ? null : domCoords(c); }
     },
     // Open the editor on an absolute cell (used by the host's context-menu "Edit").
     editCell: function (row, col) {
       var c = document.getElementById("wag-r" + row + "-c" + (col || 0));
-      if (c) { focusGrid(); setActive(c); enterEdit(c); }
+      if (c) { setActive(c); enterEdit(c); }
     },
-    // Make the grid LIVE: put real DOM focus on the table and the cursor on a
-    // cell (default the first, or the given one), and announce it. The host
-    // calls this on open / focus() so arrows and Tab work immediately, without
-    // the user having to tab onto the table first.
+    // Checkbox-free row selection for the host's context menu (the path that works
+    // under VoiceOver). selectRow adds one row; selectRowRange selects from the last
+    // selected row through this one.
+    selectRow: function (row) { selectRow(row); },
+    selectRowRange: function (row) { selectRowRangeTo(row); },
+    // Make the grid LIVE: put REAL focus on a cell (default the first, or the
+    // given one) and announce it. The host calls this on open / focus() so arrows
+    // and Tab work immediately, without the user having to tab onto the grid.
     enterGrid: function (row, col) {
       var g = grid(); if (!g) { return; }
       var c = (row != null) ? document.getElementById("wag-r" + row + "-c" + (col || 0)) : null;
       if (!c) { c = g.querySelector('tbody [role="gridcell"], tbody [role="rowheader"]'); }
-      focusGrid();
       if (c) { setActive(c); clearRange(); anchor = inHeader(c) ? null : domCoords(c); announceCell(c, true); }
     }
   };
 
-  // Anchor the active descendant on the first cell so Tab into the grid (and
-  // the first arrow) has somewhere to start.
+  // Give the first body cell the roving tabindex=0 so there is a tab stop into
+  // the grid even before the host calls enterGrid().
   (function () {
     var g = grid();
-    if (g && !activeCell()) {
+    if (g && !g.querySelector('tbody [tabindex="0"]')) {
       var first = g.querySelector('tbody [role="gridcell"], tbody [role="rowheader"]');
-      if (first) {
-        activeId = first.id;
-        g.setAttribute("aria-activedescendant", first.id);
-        first.classList.add("wag-active");
-      }
+      if (first) { activeId = first.id; first.setAttribute("tabindex", "0"); first.classList.add("wag-active"); }
     }
   })();
 })();
