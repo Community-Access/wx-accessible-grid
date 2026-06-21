@@ -150,6 +150,8 @@ _RUNTIME = r"""
     var now = tr.getAttribute("aria-selected") !== "true";
     tr.setAttribute("aria-selected", now ? "true" : "false");
     cellsOf(tr).forEach(function (c) { c.setAttribute("aria-selected", now ? "true" : "false"); });
+    var box = tr.querySelector('[data-select] input');  // keep the row checkbox in sync
+    if (box) { box.checked = now; }
     var count = grid().querySelectorAll('tbody tr[aria-selected="true"]').length;
     var label = tr.querySelector('[role="rowheader"]');
     label = label ? label.textContent.trim() : String(row + 1);
@@ -199,9 +201,26 @@ _RUNTIME = r"""
     return el.type === "checkbox" ? (el.checked ? "true" : "false") : el.value;
   }
 
+  // A checkbox flips in one keystroke (Enter/F2) rather than opening an editor:
+  // toggle the value, persist it, and announce the new state. No edit mode.
+  function toggleCheckbox(cell, meta) {
+    var raw = cell.getAttribute("data-raw");
+    var on = !(raw === "true" || raw === "1" || raw === "yes");
+    var value = on ? "true" : "false";
+    cell.setAttribute("data-raw", value);
+    cell.textContent = on ? "Yes" : "No";  // optimistic; setCell delivers the truth
+    // The single confirmation comes back through setCell (model round-trip), so
+    // the screen reader doesn't double-speak.
+    post({ action: "edit", row: rowOf(cell), col: colIndexOf(cell), value: value });
+  }
+
   function enterEdit(cell) {
     if (editing) { return; }
+    // The leading selection checkbox toggles the row rather than opening an editor.
+    if (cell.hasAttribute("data-select")) { toggleSelect(cell); return; }
     if (cell.getAttribute("data-editable") !== "1") { announce("This cell is read only"); return; }
+    var meta0 = cols[colIndexOf(cell)] || {};
+    if (meta0.editor === "checkbox") { toggleCheckbox(cell, meta0); return; }
     cell.__orig = cell.innerHTML;
     var el = buildEditor(cell);
     cell.innerHTML = "";
@@ -315,8 +334,16 @@ _RUNTIME = r"""
     // Authoritative display after a validated edit; announce the result politely.
     setCell: function (row, col, display, message) {
       var c = document.getElementById("wag-r" + row + "-c" + col);
-      if (c) { c.textContent = display; }
-      if (message) { announce(message, false); }
+      if (c) {
+        c.textContent = display;
+        // keep data-raw in step for editors (checkbox/slider/stepper) that read it
+        if (c.hasAttribute("data-raw")) {
+          c.setAttribute("data-raw", display === "Yes" ? "true" : display === "No" ? "false" : display);
+        }
+      }
+      // Always confirm: the model's message if any, else the authoritative value,
+      // so the user never hears silence after an edit (and never a double-speak).
+      announce(message || display, false);
     },
     // Edit rejected: say why (assertively), reopen the editor, and bake the
     // reason into its name so it's still spoken when focus lands on the field.

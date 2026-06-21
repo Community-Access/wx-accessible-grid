@@ -86,6 +86,20 @@ def test_editable_and_raw_markers():
     assert 'data-raw="1"' in rows      # volume row 1 -> 1
 
 
+def test_row_select_column():
+    h = render_grid(_Model(10), label="C", first=0, last=2, selected={1}, row_select=True)
+    # leading Select header + a checkbox cell per row
+    assert 'id="wag-h-sel"' in h and ">Select<" in h
+    assert 'data-select="1"' in h
+    assert 'type="checkbox" tabindex="-1" aria-label="Select row 2" checked' in h
+    # colcount is shifted by the extra column, and the row header moves to col 2
+    assert 'aria-colcount="6"' in h
+    assert 'role="rowheader" scope="row" id="wag-r0-c0" aria-colindex="2"' in h
+    # without row_select there is no select column
+    h2 = render_grid(_Model(10), label="C", first=0, last=2)
+    assert "data-select" not in h2 and 'aria-colcount="5"' in h2
+
+
 def test_selection_marked():
     rows = render_rows(_Model(10), 0, 2, selected={1})
     # the selected row's <tr> is marked

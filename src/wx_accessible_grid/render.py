@@ -52,22 +52,47 @@ def _cell_attrs(model: GridModel, row: int, col, col_index: int) -> str:
     return " ".join(attrs)
 
 
-def render_rows(model: GridModel, first: int, last: int, selected: set[int]) -> str:
+def _select_cell(row: int, label: str, sel: str, colindex: int) -> str:
+    """The leading row-selection checkbox cell (a real checkbox, so it both looks
+    like one for sighted users and announces its state to a screen reader). It is
+    toggled with Space/Enter on the cell; the table keeps focus, so the input is
+    tabindex=-1 and not a separate tab stop."""
+    checked = " checked" if sel == "true" else ""
+    return (
+        f'<td role="gridcell" id="wag-r{row}-csel" data-select="1" '
+        f'aria-colindex="{colindex}" aria-selected="{sel}">'
+        f'<input type="checkbox" tabindex="-1" aria-label="Select row {escape(label)}"{checked}>'
+        f"</td>"
+    )
+
+
+def render_rows(
+    model: GridModel,
+    first: int,
+    last: int,
+    selected: set[int],
+    *,
+    row_select: bool = False,
+) -> str:
     """Render ``<tr>`` rows for absolute indexes ``first..last`` inclusive.
 
     Used for the full page render and for the tbody-only refresh on paging,
     deletes, and edits, so refreshed rows always match the originals exactly.
+    When ``row_select`` is set, each row begins with a selection checkbox.
     """
     cols = model.columns()
+    offset = 1 if row_select else 0
     out: list[str] = []
     for row in range(first, last + 1):
         sel = "true" if row in selected else "false"
         cells: list[str] = []
+        if row_select:
+            cells.append(_select_cell(row, model.row_label(row), sel, 1))
         for ci, col in enumerate(cols):
             text = escape(model.display(row, col.name))
             cid = cell_id(row, ci)
             common = (
-                f'id="{cid}" aria-colindex="{ci + 1}" aria-selected="{sel}" '
+                f'id="{cid}" aria-colindex="{ci + 1 + offset}" aria-selected="{sel}" '
                 f"{_cell_attrs(model, row, col, ci)}"
             )
             if col.is_row_header:
@@ -89,21 +114,27 @@ def render_grid(
     last: int,
     selected: set[int] | None = None,
     description: str = "",
+    row_select: bool = False,
 ) -> str:
     """Render the whole grid (live regions, caption, header row, and rows).
 
     ``aria-rowcount`` is total rows + 1 (the header row counts); each row's
     ``aria-rowindex`` is offset to match. Two visually-hidden live regions are
     rendered as *siblings* of the table so announcements have a registered target
-    at parse time and don't depend on the host webview.
+    at parse time and don't depend on the host webview. When ``row_select`` is
+    set, a leading selection-checkbox column is added.
     """
     selected = selected or set()
     cols = model.columns()
     total = model.row_count()
+    offset = 1 if row_select else 0
 
-    headers = "".join(
+    headers = ""
+    if row_select:
+        headers += '<th role="columnheader" scope="col" id="wag-h-sel" aria-colindex="1">Select</th>'
+    headers += "".join(
         f'<th role="columnheader" scope="col" id="{header_id(ci)}" data-col="{ci}" '
-        f'aria-colindex="{ci + 1}">{escape(c.label)}</th>'
+        f'aria-colindex="{ci + 1 + offset}">{escape(c.label)}</th>'
         for ci, c in enumerate(cols)
     )
     caption = escape(label)
@@ -119,9 +150,9 @@ def render_grid(
         f"{live}"
         f'<table id="{GRID_ID}" class="wag-grid" role="grid" tabindex="0" '
         f'aria-label="{escape(label)}" aria-rowcount="{total + 1}" '
-        f'aria-colcount="{len(cols)}" aria-multiselectable="true">'
+        f'aria-colcount="{len(cols) + offset}" aria-multiselectable="true">'
         f"<caption>{caption}</caption>"
         f'<thead><tr role="row" aria-rowindex="1">{headers}</tr></thead>'
-        f"<tbody>{render_rows(model, first, last, selected)}</tbody>"
+        f"<tbody>{render_rows(model, first, last, selected, row_select=row_select)}</tbody>"
         f"</table>"
     )

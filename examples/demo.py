@@ -120,6 +120,7 @@ class DemoFrame(wx.Frame):
             self.model,
             label="Demo channels",
             page_size=100,
+            row_select=True,
             on_context=self._on_context,
             description="Arrow to move, F2 or Enter to edit, Space to select.",
         )

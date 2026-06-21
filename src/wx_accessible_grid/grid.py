@@ -56,6 +56,7 @@ class AccessibleGrid:
         handler_name: str = "wag",
         on_context=None,
         description: str = "",
+        row_select: bool = False,
     ) -> None:
         self.model = model
         self._label = label
@@ -63,6 +64,7 @@ class AccessibleGrid:
         self._handler = handler_name
         self._on_context = on_context
         self._description = description
+        self._row_select = bool(row_select)
         self._page = 0
         self._selected: set[int] = set()  # absolute row indexes
         self._installed = False
@@ -101,6 +103,15 @@ class AccessibleGrid:
 
     def focus(self) -> None:
         self._awv.focus()
+
+    def selected_rows(self) -> list[int]:
+        """Absolute indexes of the currently selected rows, ascending.
+
+        This is what bulk operations act on — move, reorder, delete a region,
+        edit a range. The host reads it (e.g. from an ``on_context`` handler or a
+        toolbar button), performs the operation via the model, then calls
+        :meth:`refresh`."""
+        return sorted(self._selected)
 
     def refresh(self) -> None:
         """Re-render the current page from the model (after external changes)."""
@@ -146,6 +157,7 @@ class AccessibleGrid:
             last=self._last(),
             selected=self._selected,
             description=desc,
+            row_select=self._row_select,
         )
 
     def _render_and_show(self, *, focus_row: int, focus_col: int) -> None:
@@ -163,7 +175,9 @@ class AccessibleGrid:
             return
         import json
 
-        html = render_rows(self.model, self._first(), self._last(), self._selected)
+        html = render_rows(
+            self.model, self._first(), self._last(), self._selected, row_select=self._row_select
+        )
         rowcount = self._total() + 1
         self._awv.run_js(
             f"window.__wag&&window.__wag.setRows("

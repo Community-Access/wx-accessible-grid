@@ -21,6 +21,10 @@ and announced correctly.
   box, combo box, checkbox, slider, or stepper. `Enter` commits, `Escape` cancels.
 - `Space`, or `Ctrl+Space`, selects a row. `Delete` deletes the selection. The
   context menu key, or `Shift+F10`, fires a callback so you can show a native menu.
+- Pass `row_select=True` to add a real checkbox at the start of every row, so
+  selecting rows for a bulk operation (move, reorder, edit a region) is visible
+  and discoverable, not just a keystroke. The host reads `grid.selected_rows()`,
+  acts through the model, and calls `grid.refresh()`.
 - Editing round-trips through your model, so the value the screen reader confirms
   is the validated, normalized one, never the raw keystrokes. If an edit is
   rejected the user hears why and the editor reopens so they can fix it.
