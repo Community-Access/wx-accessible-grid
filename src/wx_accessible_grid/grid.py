@@ -193,6 +193,17 @@ class AccessibleGrid:
         if self._awv.using_webview:
             self._awv.run_js(f"window.__wag&&window.__wag.selectRowRange({int(row)});")
 
+    def select_all_rows(self) -> None:
+        """Select every row (the host's Edit > Select All / Ctrl+A). Updates
+        :meth:`selected_rows` and fires ``on_selection_changed``."""
+        if self._awv.using_webview:
+            self._awv.run_js("window.__wag&&window.__wag.selectAllRows();")
+
+    def clear_selection(self) -> None:
+        """Clear all row selection and any cell range (Edit > Clear Selection)."""
+        if self._awv.using_webview:
+            self._awv.run_js("window.__wag&&window.__wag.clearSelection();")
+
     def show_context_menu(self, items: list[ContextMenuItem]) -> None:
         """Pop up a native ``wx.Menu`` of :class:`ContextMenuItem` on the grid and
         return focus to the cell afterwards. Call this from your ``on_context``
@@ -340,6 +351,10 @@ class AccessibleGrid:
             self._handle_edit(data)
         elif action == "select":
             self._handle_select(data)
+        elif action == "selectAllRows":
+            self._handle_select_all(data)
+        elif action == "clearSelection":
+            self._handle_clear_selection()
         elif action == "delete":
             self._delete_rows([int(r) for r in data.get("rows", [])])
         elif action == "navigate":
@@ -372,6 +387,16 @@ class AccessibleGrid:
             self._selected.discard(row)
         if self._on_selection_changed is not None:
             self._on_selection_changed(self.selected_rows())
+
+    def _handle_select_all(self, data: dict) -> None:
+        self._selected = {int(r) for r in data.get("rows", [])}
+        if self._on_selection_changed is not None:
+            self._on_selection_changed(self.selected_rows())
+
+    def _handle_clear_selection(self) -> None:
+        self._selected.clear()
+        if self._on_selection_changed is not None:
+            self._on_selection_changed([])
 
     def _handle_navigate(self, data: dict) -> None:
         row, col = int(data["row"]), int(data.get("col", 0))

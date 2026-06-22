@@ -34,10 +34,18 @@ table.wag-grid thead th {
   color: var(--wag-head-fg, #000);
 }
 table.wag-grid tbody tr.wag-rowsel {
-  background: var(--wag-sel-bg, #cde4ff); color: var(--wag-sel-fg, #000);
+  /* Selected rows use a dark fill with light text: the fill is clearly distinct
+     from the white rows (well past 3:1 region contrast, unlike the old faint blue)
+     and the text stays readable (>= 4.5:1). Selection is also conveyed without
+     color — the row checkbox state and a spoken "selected" — so it never relies on
+     color alone. Override --wag-sel-bg / --wag-sel-fg to theme it. */
+  background: var(--wag-sel-bg, #00478f); color: var(--wag-sel-fg, #fff);
 }
+table.wag-grid tbody tr.wag-rowsel a { color: var(--wag-sel-fg, #fff); }
 table.wag-grid tbody [aria-selected="true"] {
-  background: var(--wag-range-bg, #9ec5ff);
+  /* Cell-range selection: a mid blue distinct from both the white rows and the
+     dark row-selection fill, with black text kept readable. */
+  background: var(--wag-range-bg, #3b78d8); color: var(--wag-range-fg, #000);
 }
 table.wag-grid .wag-active {
   outline: 3px solid var(--wag-focus, #0a5ad6); outline-offset: -3px;
@@ -52,7 +60,8 @@ table.wag-grid .wag-editor { width: 100%; box-sizing: border-box; font: inherit;
 # The behaviour. Framework-free vanilla JS. Comments explain the *why*.
 # Excel/Word-style data grid: arrows move a cell and announce column+row, Tab and
 # Shift+Tab walk cells and wrap at row ends, Enter commits and drops down a row,
-# F2 or typing edits in place, F6 leaves the grid, Shift+F10/Apps open a menu.
+# F2 or typing edits in place, F6 leaves the grid; Shift+F10/Apps key/VO+Shift+M
+# (a `contextmenu` event) all open the native row menu, where selection lives.
 _RUNTIME = r"""
 (function () {
   if (window.__wag && window.__wag.__installed) { return; }
@@ -112,7 +121,15 @@ _RUNTIME = r"""
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
   function suffixSpan(cell) { return cell.querySelector(":scope > .wag-sr-only"); }
+  // The value now lives in its own span (id ending "-v") so aria-labelledby can
+  // reference it by id; read and write the value THROUGH it so the value span id
+  // and the control-type suffix span both survive and the composed name keeps
+  // resolving.
+  function valueSpan(cell) { return cell.querySelector(':scope > [id$="-v"]'); }
   function cellText(cell) {
+    var v = valueSpan(cell);
+    if (v) { return v.textContent.trim(); }
+    // Fallback for cells with no value span (e.g. the row-select checkbox cell).
     var sx = suffixSpan(cell);
     if (!sx) { return cell.textContent.trim(); }
     var t = "";
@@ -122,9 +139,12 @@ _RUNTIME = r"""
     }
     return t.trim();
   }
-  // Set the cell's visible value while KEEPING its suffix span intact (so the
-  // control-type word survives an authoritative setCell / optimistic edit text).
+  // Set the cell's visible value while KEEPING its value-span id and suffix span
+  // intact (so aria-labelledby still resolves and the control-type word survives an
+  // authoritative setCell / optimistic edit text).
   function setCellText(cell, value) {
+    var v = valueSpan(cell);
+    if (v) { v.textContent = value; return; }
     var sx = suffixSpan(cell);
     if (!sx) { cell.textContent = value; return; }
     var n = cell.childNodes, i;
@@ -241,13 +261,18 @@ _RUNTIME = r"""
     }
   }
 
-  // Plain move: set active, COLLAPSE any range and re-anchor, announce the value.
+  // Plain move: set active, COLLAPSE any range and re-anchor. Data cells are NOT
+  // echoed to the live region: each carries an aria-labelledby name (channel,
+  // column header, value, control type) that BOTH VoiceOver (computed name) and
+  // NVDA (focus-mode name) speak on focus. Echoing here would make NVDA
+  // double-speak. The live region stays reserved for events with no name to ride
+  // on — ranges, edges, edit results. Header cells have no composed name, so they
+  // still announce here.
   function goTo(cell, vertical) {
     if (!cell) { return; }
     setActive(cell);
-    if (inHeader(cell)) { clearRange(); anchor = null; }
+    if (inHeader(cell)) { clearRange(); anchor = null; announceCell(cell, vertical); }
     else { clearRange(); anchor = domCoords(cell); }
-    announceCell(cell, vertical);
     postNavigate(cell);
   }
   function moveTo(tr, colIdx, vertical) {
@@ -435,6 +460,37 @@ _RUNTIME = r"""
     announce("Selected all, " + n + (n === 1 ? " cell" : " cells"));
   }
 
+  // Bulk ROW select-all / clear, for the host's Edit menu (Select All / Clear) and
+  // for Ctrl+A. They set every row's class/checkbox/status span directly and report
+  // the result to Python in ONE message rather than one per row.
+  function selectAllRows() {
+    var rows = bodyRows(); if (!rows.length) { return; }
+    var nums = [];
+    for (var i = 0; i < rows.length; i++) {
+      var tr = rows[i];
+      tr.classList.add("wag-rowsel");
+      var box = tr.querySelector('[data-select] input');
+      if (box) { box.checked = true; }
+      nums.push(parseInt(tr.getAttribute("data-row"), 10));
+    }
+    rowSelAnchor = nums[nums.length - 1];
+    post({ action: "selectAllRows", rows: nums });
+    announce("Selected all, " + nums.length + (nums.length === 1 ? " row" : " rows") + " selected");
+  }
+  function clearAllSelection() {
+    var rows = bodyRows();
+    for (var i = 0; i < rows.length; i++) {
+      var tr = rows[i];
+      tr.classList.remove("wag-rowsel");
+      var box = tr.querySelector('[data-select] input');
+      if (box) { box.checked = false; }
+    }
+    clearRange();
+    rowSelAnchor = null;
+    post({ action: "clearSelection" });
+    announce("Selection cleared");
+  }
+
   // ----- editing -------------------------------------------------------
 
   function buildEditor(cell) {
@@ -503,6 +559,11 @@ _RUNTIME = r"""
     // rebuilds the cell's value (cancelEdit restores it for free via __orig).
     var sx0 = suffixSpan(cell);
     cell.__suffix = sx0 ? sx0.outerHTML : "";
+    // Drop the composed name for the duration: its aria-labelledby points at the
+    // value/suffix spans we are about to replace with the editor input (which
+    // carries its own aria-label). Restored on commit/cancel.
+    cell.__lbl = cell.getAttribute("aria-labelledby");
+    if (cell.__lbl != null) { cell.removeAttribute("aria-labelledby"); }
     var el = buildEditor(cell);
     cell.innerHTML = "";
     cell.appendChild(el);
@@ -533,10 +594,14 @@ _RUNTIME = r"""
     var value = readEditor(el);
     var isCheck = el.type === "checkbox";
     post({ action: "edit", row: rowOf(cell), col: colIndexOf(cell), value: value });
-    // Optimistic text; Python's setCell() delivers the authoritative value. Re-append
-    // the hidden control-type suffix so the cell still announces "…, edit box".
+    // Optimistic text; Python's setCell() delivers the authoritative value. Rebuild
+    // the value span with its stable id (so aria-labelledby resolves), re-append the
+    // hidden control-type suffix so the cell still announces "…, edit box", and
+    // restore the composed name.
     var shown = isCheck ? (value === "true" ? "Yes" : "No") : el.value;
-    cell.innerHTML = escapeHtml(shown) + (cell.__suffix || "");
+    cell.innerHTML = '<span id="' + cell.id + '-v">' + escapeHtml(shown) + "</span>" +
+                     (cell.__suffix || "");
+    if (cell.__lbl != null) { cell.setAttribute("aria-labelledby", cell.__lbl); }
     editing = null;
     setActive(cell);   // editing cleared first, so this re-focuses the CELL
     if (mode === "down") { moveDown(cell); }
@@ -548,6 +613,8 @@ _RUNTIME = r"""
     if (!editing) { return; }
     var cell = editing;
     cell.innerHTML = cell.__orig != null ? cell.__orig : cell.innerHTML;
+    // __orig already holds the original value/suffix spans; re-add the name attr.
+    if (cell.__lbl != null) { cell.setAttribute("aria-labelledby", cell.__lbl); }
     editing = null;
     setActive(cell);   // editing cleared first, so this re-focuses the CELL
     announce("Edit cancelled");
@@ -616,7 +683,10 @@ _RUNTIME = r"""
       return;
     }
     if (k === "a" || k === "A") {
-      if (e.ctrlKey && !e.shiftKey && !e.altKey) { e.preventDefault(); selectAllCells(); return; }
+      // Ctrl+A selects all ROWS (channels) — the unit bulk operations act on —
+      // matching the host's Edit > Select All. (selectAllCells remains for a
+      // range-oriented host that wants whole-grid cell selection instead.)
+      if (e.ctrlKey && !e.shiftKey && !e.altKey) { e.preventDefault(); selectAllRows(); return; }
     }
     if (k === " " || k === "Spacebar") {
       e.preventDefault();
@@ -646,6 +716,27 @@ _RUNTIME = r"""
       if (meta.editor !== "checkbox") { e.preventDefault(); enterEdit(cell, e.key); return; }
     }
     if (navigate(cell, k, e.ctrlKey, e.shiftKey)) { e.preventDefault(); }
+  });
+
+  // Context menu via the DOM `contextmenu` event, not just the ContextMenu key.
+  // This is the path that works under VoiceOver on macOS: there is no Applications
+  // key, and VoiceOver's "open menu" gesture (VO+Shift+M) — plus a right-click and
+  // a trackpad secondary-click — dispatches a `contextmenu` event, never a keydown.
+  // Because VoiceOver also intercepts the arrows, this event is the ONLY way a
+  // VoiceOver user can reach the native row menu where row selection lives. Map it
+  // to the cell under the pointer, else the active cell, and hand off to the host.
+  document.addEventListener("contextmenu", function (e) {
+    var g = grid();
+    if (!g) { return; }
+    var t = e.target;
+    var cell = (t && t.closest)
+      ? t.closest('#wag-grid [role="gridcell"], #wag-grid [role="rowheader"]')
+      : null;
+    if (!cell) { cell = activeCell(); }
+    if (!cell || !g.contains(cell)) { return; }
+    e.preventDefault();
+    if (!editing) { setActive(cell); }
+    post({ action: "context", row: rowOf(cell), col: colIndexOf(cell) });
   });
 
   // A SELECT commits when its value changes; any editor commits if focus
@@ -736,6 +827,9 @@ _RUNTIME = r"""
     // selected row through this one.
     selectRow: function (row) { selectRow(row); },
     selectRowRange: function (row) { selectRowRangeTo(row); },
+    // Bulk select-all / clear for the host's Edit menu.
+    selectAllRows: function () { selectAllRows(); },
+    clearSelection: function () { clearAllSelection(); },
     // Make the grid LIVE: put REAL focus on a cell (default the first, or the
     // given one) and announce it. The host calls this on open / focus() so arrows
     // and Tab work immediately, without the user having to tab onto the grid.

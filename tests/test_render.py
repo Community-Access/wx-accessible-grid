@@ -133,17 +133,43 @@ def test_bulk_selected_row_uses_class_not_aria_selected():
 
 
 def test_editor_type_suffix_in_cell_name():
-    # Each editable data cell carries a visually-hidden control-type suffix span so
-    # VoiceOver speaks it as part of the cell's accessible name ("…, edit box").
+    # Each editable data cell carries a visually-hidden control-type suffix span
+    # (now with a stable id and no leading comma) so a screen reader speaks the
+    # control type as part of the cell's accessible name.
     rows = render_rows(_Model(10), 0, 0, selected=set())
-    assert '<span class="wag-sr-only">, edit box</span>' in rows   # name (text)
-    assert '<span class="wag-sr-only">, combo box</span>' in rows  # mode (combo)
-    assert '<span class="wag-sr-only">, checkbox</span>' in rows   # active (checkbox)
-    assert '<span class="wag-sr-only">, slider</span>' in rows     # vol (slider)
+    assert 'class="wag-sr-only">edit box</span>' in rows   # name (text)
+    assert 'class="wag-sr-only">combo box</span>' in rows  # mode (combo)
+    assert 'class="wag-sr-only">checkbox</span>' in rows   # active (checkbox)
+    assert 'class="wag-sr-only">slider</span>' in rows     # vol (slider)
+    # the leading ", " is gone — aria-labelledby tokens are spoken as separate
+    # phrases, so the comma would be doubled up
+    assert 'wag-sr-only">, ' not in rows
     # the non-editable row-header (#) gets NO suffix (it is an identifier)
     assert '<th role="rowheader" scope="row" id="wag-r0-c0"' in rows
     head_cell = rows.split('id="wag-r0-c0"', 1)[1].split("</th>", 1)[0]
     assert "wag-sr-only" not in head_cell
+
+
+def test_cell_name_is_composed_with_aria_labelledby():
+    # The header fix: each data cell's accessible NAME is composed via aria-labelledby
+    # from the row header (channel), the column header, the value span, and the
+    # control-type span — so VoiceOver speaks "channel, header, value, type" on every
+    # focus move with no JS (it never receives the VO+arrow). The value lives in its
+    # own span so the cell is never self-referenced.
+    rows = render_rows(_Model(10), 0, 0, selected=set())
+    # the "name" column is data-col 1: rowheader c0, column header c1, value, suffix.
+    # Selection state is intentionally NOT in the per-move name (announcing it on
+    # every move is the chatter bug we already fixed).
+    assert 'aria-labelledby="wag-r0-c0 wag-h-c1 wag-r0-c1-v wag-r0-c1-s"' in rows
+    assert '<span id="wag-r0-c1-v">name0</span>' in rows
+    # the row header's channel value is wrapped so data cells can reference it
+    assert '<span id="wag-r0-c0-v">1</span>' in rows
+    # the row header is itself NOT labelledby-composed (it is the identifier)
+    head_tag = rows.split('<th role="rowheader" scope="row" id="wag-r0-c0"', 1)[1].split(">", 1)[0]
+    assert "aria-labelledby" not in head_tag
+    # no per-row selection-status span exists (selection is announced on action,
+    # not baked into every cell's name)
+    assert "-sel" not in rows
 
 
 def test_readonly_cell_announces_read_only():
@@ -158,7 +184,7 @@ def test_readonly_cell_announces_read_only():
             ]
 
     rows = render_rows(RO(), 0, 0, selected=set())
-    assert '<span class="wag-sr-only">, read only</span>' in rows
+    assert 'class="wag-sr-only">read only</span>' in rows
 
 
 def test_render_never_emits_aria_selected():

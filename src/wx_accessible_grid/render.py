@@ -18,6 +18,17 @@ kills the arrows); only the editor input takes focus, while editing.
 Only one page of rows is ever in the DOM. ``aria-rowindex`` on each row is the
 *absolute* 1-based position (header row is 1, the first data row is 2), so paging
 is invisible to the user's sense of place.
+
+Accessible name (the header fix): a real table is *supposed* to make the screen
+reader speak the row/column header as you move, but VoiceOver does NOT do that on
+focus move inside ``role="grid"`` — and because VoiceOver intercepts VO+arrows,
+the runtime's live-region announcement never fires either, so on macOS the header
+goes unspoken. The fix lives here, in the static DOM: each data cell carries an
+``aria-labelledby`` that composes its name from the row-header cell, the column
+header ``<th>``, the value (wrapped in its own span), and the control-type span —
+"5, Frequency, 146.520, edit box". VoiceOver recomputes and speaks that on every
+focus landing with no JS, and NVDA reads the same name in focus mode (so the
+runtime stops echoing plain moves into the live region to avoid double-speak).
 """
 
 from __future__ import annotations
@@ -133,16 +144,43 @@ def render_rows(
                 f'id="{cid}" aria-colindex="{ci + 1 + offset}" tabindex="-1" '
                 f"{_cell_attrs(model, row, col, ci)}"
             )
-            # Visually-hidden control-type suffix, part of the cell's accessible
-            # name so VoiceOver speaks it on navigation ("…, edit box"). The editor
-            # replaces the cell's children while editing, so the span is naturally
-            # absent during edit and restored from cell.__orig on cancel.
+            # Compose the cell's accessible NAME from referenced child spans so a
+            # screen reader speaks the full context — channel, column header, value,
+            # control type — on every focus move. This is the ONE channel VoiceOver
+            # reads when VO+arrows never reach the page: the JS live-region
+            # announcement can't fire under VoiceOver, but the computed name
+            # (aria-labelledby) is spoken on focus. The value lives in its own span
+            # so aria-labelledby can target it WITHOUT self-referencing the cell (a
+            # self-idref re-walks the subtree and on WebKit can drop or double the
+            # value). The control-type span keeps the spoken word, gets a stable id,
+            # and drops the leading comma (labelledby tokens are spoken as separate
+            # phrases). The editor swaps the cell's children while editing, so the JS
+            # drops aria-labelledby for the duration and rebuilds these spans on
+            # commit; cancel restores them from cell.__orig.
+            vid = f"{cid}-v"
+            sid = f"{cid}-s"
+            val = f'<span id="{vid}">{text}</span>'
             suffix = _editor_suffix(model, row, col)
-            tail = f'<span class="wag-sr-only">, {escape(suffix)}</span>' if suffix else ""
+            tail = f'<span id="{sid}" class="wag-sr-only">{escape(suffix)}</span>' if suffix else ""
             if col.is_row_header:
-                cells.append(f'<th role="rowheader" scope="row" {common}>{text}{tail}</th>')
+                # The row header (channel number) is an identifier the data cells
+                # reference by id; it just speaks its own value.
+                cells.append(f'<th role="rowheader" scope="row" {common}>{val}{tail}</th>')
             else:
-                cells.append(f'<td role="gridcell" {common}>{text}{tail}</td>')
+                # Static name order: channel (row header), column header, value,
+                # control type -> "5, Frequency, 146.520, edit box". Reference the
+                # existing column-header <th> and the row-header cell by id, so no
+                # text is duplicated and the ids stay stable across paging.
+                # NOTE: selection state is deliberately NOT part of the per-move
+                # name — announcing "selected" on every move is the chatter bug we
+                # already fixed. Selection is announced only when you actually
+                # select (toggleSelect / the range + Edit-menu commands).
+                lbl = f"{cell_id(row, 0)} {header_id(ci)} {vid}"
+                if suffix:
+                    lbl += f" {sid}"
+                cells.append(
+                    f'<td role="gridcell" {common} aria-labelledby="{lbl}">{val}{tail}</td>'
+                )
         cls = ' class="wag-rowsel"' if rowsel else ""
         out.append(
             f'<tr role="row" aria-rowindex="{row + 2}" data-row="{row}"{cls}>'
