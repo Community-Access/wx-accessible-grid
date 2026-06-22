@@ -211,20 +211,20 @@ _RUNTIME = r"""
     var sx = suffixSpan(cell);
     return sx ? sx.textContent.replace(/^,\s*/, "").trim() : "";
   }
-  function announceCell(cell, vertical) {
+  function announceCell(cell, vertical, assertive) {
     if (!cell) { return; }
-    if (inHeader(cell)) { announce(cell.textContent.trim() + ", column header"); return; }
+    if (inHeader(cell)) { announce(cell.textContent.trim() + ", column header", assertive); return; }
     var tr = cell.closest("tr");
     var value = cellText(cell);
     var hdr = colHeader(cell);
     var word = editorWord(cell);          // appended so VO + the live region agree
     var tail = word ? ", " + word : "";
     if (cell.getAttribute("role") === "rowheader") {
-      announce(vertical ? rowLabelOf(tr) : ((hdr ? hdr + ", " : "") + value + tail));
+      announce(vertical ? rowLabelOf(tr) : ((hdr ? hdr + ", " : "") + value + tail), assertive);
       return;
     }
     var hv = (hdr ? hdr + ", " : "") + (value || coordOf(cell)) + tail;
-    announce(vertical ? (rowLabelOf(tr) + ", " + hv) : hv);
+    announce(vertical ? (rowLabelOf(tr) + ", " + hv) : hv, assertive);
   }
   function postNavigate(cell) {
     var row = rowOf(cell), col = colIndexOf(cell);
@@ -257,7 +257,7 @@ _RUNTIME = r"""
   function announceRange(a, b, n) {
     var ca = cellByDom(a.ri, a.ci), cb = cellByDom(b.ri, b.ci);
     if (ca && cb) {
-      announce("Selected " + coordOf(ca) + " to " + coordOf(cb) + ", " + n + (n === 1 ? " cell" : " cells"));
+      announce("Selected " + coordOf(ca) + " to " + coordOf(cb) + ", " + n + (n === 1 ? " cell" : " cells"), true);
     }
   }
 
@@ -403,7 +403,7 @@ _RUNTIME = r"""
     setRowSelected(tr, now);
     var count = selectedRowCount();
     announce("Row " + rowLabelFor(tr, row) + (now ? " selected" : " unselected") +
-             ", " + count + (count === 1 ? " row" : " rows") + " selected");
+             ", " + count + (count === 1 ? " row" : " rows") + " selected", true);
   }
   // Context-menu path (the route that works under VoiceOver, where plain arrows and
   // Shift+arrow are intercepted by VO and never reach the page). "Select this row"
@@ -414,7 +414,7 @@ _RUNTIME = r"""
     setRowSelected(tr, true);
     var count = selectedRowCount();
     announce("Row " + rowLabelFor(tr, row) + " selected, " +
-             count + (count === 1 ? " row" : " rows") + " selected");
+             count + (count === 1 ? " row" : " rows") + " selected", true);
   }
   // "Select range to here": select every row from the last selected row (anchor)
   // through the given row, inclusive — a checkbox-free way to select a span.
@@ -433,7 +433,7 @@ _RUNTIME = r"""
     var trEnd = byIndex[row];
     announce("Selected rows " + rowLabelFor(byIndex[lo], lo) + " to " +
              rowLabelFor(byIndex[hi], hi) + ", " +
-             count + (count === 1 ? " row" : " rows") + " selected");
+             count + (count === 1 ? " row" : " rows") + " selected", true);
   }
 
   // ----- range commands: Ctrl+Space column, Shift+Space row, Ctrl+A all --
@@ -443,7 +443,7 @@ _RUNTIME = r"""
     var n = paintRange({ ri: 0, ci: ci }, { ri: rows.length - 1, ci: ci });
     anchor = domCoords(cell);
     var letter = coordOf(cellByDom(0, ci)).replace(/[0-9]+$/, "");
-    announce("Selected column " + letter + ", " + n + (n === 1 ? " cell" : " cells"));
+    announce("Selected column " + letter + ", " + n + (n === 1 ? " cell" : " cells"), true);
   }
   function selectRowRange() {
     var cell = activeCell(); if (!cell || inHeader(cell)) { return; }
@@ -451,13 +451,13 @@ _RUNTIME = r"""
     var last = cellsOf(tr).length - 1;
     var n = paintRange({ ri: ri, ci: 0 }, { ri: ri, ci: last });
     anchor = domCoords(cell);
-    announce("Selected row " + rowLabelOf(tr) + ", " + n + (n === 1 ? " cell" : " cells"));
+    announce("Selected row " + rowLabelOf(tr) + ", " + n + (n === 1 ? " cell" : " cells"), true);
   }
   function selectAllCells() {
     var rows = bodyRows(); if (!rows.length) { return; }
     var last = cellsOf(rows[rows.length - 1]).length - 1;
     var n = paintRange({ ri: 0, ci: 0 }, { ri: rows.length - 1, ci: last });
-    announce("Selected all, " + n + (n === 1 ? " cell" : " cells"));
+    announce("Selected all, " + n + (n === 1 ? " cell" : " cells"), true);
   }
 
   // Bulk ROW select-all / clear, for the host's Edit menu (Select All / Clear) and
@@ -475,7 +475,7 @@ _RUNTIME = r"""
     }
     rowSelAnchor = nums[nums.length - 1];
     post({ action: "selectAllRows", rows: nums });
-    announce("Selected all, " + nums.length + (nums.length === 1 ? " row" : " rows") + " selected");
+    announce("Selected all, " + nums.length + (nums.length === 1 ? " row" : " rows") + " selected", true);
   }
   function clearAllSelection() {
     var rows = bodyRows();
@@ -488,7 +488,7 @@ _RUNTIME = r"""
     clearRange();
     rowSelAnchor = null;
     post({ action: "clearSelection" });
-    announce("Selection cleared");
+    announce("Selection cleared", true);
   }
 
   // ----- editing -------------------------------------------------------
@@ -837,7 +837,10 @@ _RUNTIME = r"""
       var g = grid(); if (!g) { return; }
       var c = (row != null) ? document.getElementById("wag-r" + row + "-c" + (col || 0)) : null;
       if (!c) { c = g.querySelector('tbody [role="gridcell"], tbody [role="rowheader"]'); }
-      if (c) { setActive(c); clearRange(); anchor = inHeader(c) ? null : domCoords(c); announceCell(c, true); }
+      // Assertive on enter: VoiceOver does not move its cursor to a programmatically
+      // focused webview cell, so announce the landing cell (channel 1 on open)
+      // assertively to confirm where the grid starts.
+      if (c) { setActive(c); clearRange(); anchor = inHeader(c) ? null : domCoords(c); announceCell(c, true, true); }
     }
   };
 

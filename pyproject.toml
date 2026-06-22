@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wx-accessible-grid"
-version = "0.4.0"
+version = "0.4.1"
 description = "An accessible, editable data grid for wxPython rendered as a real ARIA grid in a WebView, with Excel-style keyboard navigation (arrow-key cell movement, Tab/Enter, F2 and type-to-edit, Shift+arrow range selection), in-cell editors, and context menus that read correctly in NVDA and JAWS."
 readme = "README.md"
 requires-python = ">=3.10"
