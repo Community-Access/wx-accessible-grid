@@ -4,38 +4,27 @@ from __future__ import annotations
 
 import pytest
 
-from wx_accessible_grid.model import (
-    CHECKBOX,
-    NONE,
-    Column,
-    GridModel,
-    SetResult,
-)
+from wx_accessible_grid.model import Column, GridModel
 
 
-def test_unknown_editor_rejected():
+def test_unknown_width_hint_rejected():
     with pytest.raises(ValueError):
-        Column("x", "X", editor="dropdown")
+        Column("x", "X", width_hint="huge")
 
 
-def test_row_header_and_none_are_read_only():
-    assert Column("n", "#", is_row_header=True).editable is False
-    assert Column("c", "C", editor=NONE).editable is False
-    # An explicit editable=True is overridden for a row header.
-    assert Column("n", "#", is_row_header=True, editable=True).editable is False
-
-
-def test_checkbox_column_keeps_editable():
-    assert Column("on", "On", editor=CHECKBOX).editable is True
+def test_column_defaults():
+    col = Column("name", "Name")
+    assert col.is_row_header is False
+    assert col.width_hint == "auto"
 
 
 class _Model(GridModel):
     def __init__(self):
         self._cols = [
-            Column("num", "#", editor=NONE, is_row_header=True),
+            Column("num", "#", is_row_header=True, width_hint="narrow"),
             Column("name", "Name"),
         ]
-        self._data = [{"name": "a"}, {"name": "b"}]
+        self._data = [{"name": "Alpha"}, {"name": "Bravo"}]
 
     def columns(self):
         return self._cols
@@ -43,32 +32,28 @@ class _Model(GridModel):
     def row_count(self):
         return len(self._data)
 
-    def display(self, row, column):
+    def cell_text(self, row, column):
         return str(row + 1) if column == "num" else self._data[row][column]
 
-    def set_cell(self, row, column, value):
-        self._data[row][column] = value
-        return SetResult(True, value, "ok")
 
-
-def test_defaults_and_helpers():
+def test_row_count_and_cell_text():
     m = _Model()
     assert m.row_count() == 2
-    assert m.edit_value(0, "name") == "a"  # defaults to display
-    assert m.is_editable(0, "name") is True
-    assert m.is_editable(0, "num") is False
-    assert m.row_label(0) == "1"  # row-header cell text
-    assert m.choices(0, "name") == []
+    assert m.cell_text(0, "num") == "1"
+    assert m.cell_text(1, "name") == "Bravo"
 
 
-def test_delete_unsupported_by_default():
-    m = _Model()
-    res = m.delete_rows([0])
-    assert res.ok is False and "not supported" in res.message.lower()
+def test_row_label_uses_row_header_cell():
+    assert _Model().row_label(1) == "2"  # the "num" cell text, not the index
 
 
-def test_set_cell_round_trip():
-    m = _Model()
-    res = m.set_cell(0, "name", "z")
-    assert res.ok and res.display == "z"
-    assert m.display(0, "name") == "z"
+def test_row_label_falls_back_to_one_based_number():
+    class NoHeader(_Model):
+        def columns(self):
+            return [Column("name", "Name")]
+
+    assert NoHeader().row_label(0) == "1"
+
+
+def test_column_names_in_order():
+    assert _Model().column_names() == ["num", "name"]

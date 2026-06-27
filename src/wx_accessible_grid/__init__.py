@@ -1,22 +1,24 @@
-"""wx-accessible-grid — an accessible, editable data grid for wxPython.
+"""wx-accessible-grid — an accessible data grid for wxPython.
 
-Native ``wx.grid.Grid`` reads poorly (or not at all) in NVDA and JAWS, and
-hand-built ``<div>`` grids are worse. This library takes the approach proven by
-its sibling :mod:`wx_accessible_webview`: render a real, semantic **ARIA grid**
-into a WebView and let the screen reader follow it like any web data table, then
-layer application-style keyboard behaviour on top.
+A blind person can actually use this grid because it is a **real native wx
+control**: a virtual ``wx.ListCtrl`` in report mode. NVDA, JAWS, and VoiceOver
+read it directly, the way they read any native list, with no WebView and no HTML
+in the path.
 
-What you get, fully keyboard-operable and read correctly in NVDA/JAWS:
+The stock ``wx.grid.Grid`` reads poorly (or not at all) in NVDA and JAWS, and an
+earlier version of this library rendered an ARIA grid into a WebView to get
+around that. The native virtual ``wx.ListCtrl`` reads each row correctly as you
+arrow through it, populates instantly at any size, and needs no browser runtime,
+so that is the library's approach now.
 
-* Arrow keys move a single focused cell (a roving ``tabindex``). The reader
-  speaks the column header moving across a row and the row header moving down a
-  column — and only the focused cell, so a huge dataset stays fast.
-* ``F2`` or ``Enter`` edits a cell in place with the right control: edit box,
-  combo box, checkbox, slider, or stepper. ``Enter`` commits, ``Escape`` cancels.
-* ``Space`` (or ``Ctrl+Space``) selects a row; ``Delete`` deletes the selection;
-  the context-menu key fires a callback so the host can show a native menu.
-* Editing round-trips through your :class:`GridModel`, so the value the screen
-  reader confirms is the validated, normalized one — never the raw keystrokes.
+What you get, read correctly in NVDA/JAWS/VoiceOver:
+
+* A native virtual list. Rows are pulled on demand through one ``OnGetItemText``
+  callback, so thousands of rows populate instantly and there is no paging.
+* Real native rows. Arrow up and down and the screen reader reads the focused
+  row with its column headers, because it is a genuine native list item.
+* Native multi-select, plus selection and focus helpers that make sure a moved
+  or edited row is both selected and actually spoken.
 
 Quick start::
 
@@ -25,11 +27,13 @@ Quick start::
     class MyModel(GridModel):
         def columns(self): ...
         def row_count(self): ...
-        def display(self, row, column): ...
-        def set_cell(self, row, column, value): ...
+        def cell_text(self, row, column): ...
 
     grid = AccessibleGrid(panel, MyModel(), label="Memory channels")
     sizer.Add(grid.control, 1, wx.EXPAND)
+
+Editing is host-driven: read ``grid.selected_rows()``, edit through your own
+model with a native control, then call ``grid.refresh_rows(...)``.
 
 A Community Access open-source project, created by Taylor Arndt. First built for
 VRP, the accessible radio programmer.
@@ -37,31 +41,16 @@ VRP, the accessible radio programmer.
 
 from __future__ import annotations
 
-from wx_accessible_grid.grid import AccessibleGrid, ContextMenuItem
-from wx_accessible_grid.model import (
-    CHECKBOX,
-    COMBO,
-    NONE,
-    SLIDER,
-    STEPPER,
-    TEXT,
-    Column,
-    GridModel,
-    SetResult,
-)
+from wx_accessible_grid.grid import AccessibleGrid
+from wx_accessible_grid.model import AUTO, NARROW, WIDE, Column, GridModel
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 __all__ = [
     "AccessibleGrid",
-    "ContextMenuItem",
     "GridModel",
     "Column",
-    "SetResult",
-    "TEXT",
-    "COMBO",
-    "CHECKBOX",
-    "SLIDER",
-    "STEPPER",
-    "NONE",
+    "NARROW",
+    "WIDE",
+    "AUTO",
     "__version__",
 ]

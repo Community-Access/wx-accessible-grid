@@ -1,36 +1,44 @@
 # wx-accessible-grid
 
 An accessible, editable data grid for wxPython that a blind person can actually
-use. Native `wx.grid.Grid` reads poorly or not at all in NVDA and JAWS, and a
-hand-built grid of `<div>`s is worse. This library takes the approach proven by
-its sibling [wx-accessible-webview](https://github.com/Community-Access/wx-accessible-webview):
-render a real, semantic ARIA grid into a WebView and let the screen reader follow
-it like any web data table, then layer spreadsheet-style keyboard behavior on top.
+use. It is a **real native wx control**: a virtual `wx.ListCtrl` in report mode.
+NVDA, JAWS, and VoiceOver read it directly, the way they read any native list,
+with no WebView and no HTML in the path.
+
+Earlier versions rendered a semantic ARIA grid into a WebView. That worked, but
+it put a browser document between your data and the screen reader, depended on a
+WebView2/WKWebView runtime, and paged the DOM to stay fast. The native virtual
+`wx.ListCtrl`, proven in Versatile Radio Programmer's channel grid, reads each
+row correctly as you arrow through it, populates instantly at any size, and needs
+no browser runtime. That is the library's approach now.
 
 It is built for data entry, not a spreadsheet engine. There are no formulas. What
-there is, is every control you actually edit data with, fully keyboard-operable
-and announced correctly.
+there is, is a native grid that is fully keyboard-operable and announced
+correctly, with editing that round-trips through your model.
 
 ## What you get
 
-- Arrow keys move a single focused cell, not the document. Moving across a row
-  speaks the column header. Moving down a column speaks the row header. Only the
-  focused cell is read, so a grid with thousands of rows stays fast instead of
-  making the screen reader re-read the whole table on every keystroke.
-- `F2` or `Enter` edits a cell in place with the right control for the data: edit
-  box, combo box, checkbox, slider, or stepper. `Enter` commits, `Escape` cancels.
-- `Space`, or `Ctrl+Space`, selects a row. `Delete` deletes the selection. The
-  context menu key, or `Shift+F10`, fires a callback so you can show a native menu.
-- Pass `row_select=True` to add a real checkbox at the start of every row, so
-  selecting rows for a bulk operation (move, reorder, edit a region) is visible
-  and discoverable, not just a keystroke. The host reads `grid.selected_rows()`,
-  acts through the model, and calls `grid.refresh()`.
+- A native virtual list (`LC_REPORT | LC_VIRTUAL`). Virtual means rows are pulled
+  on demand through a single `OnGetItemText` callback, so a grid with thousands
+  of rows populates instantly and there is no paging. The screen reader still
+  gets a correct sense of "row N of many" from the native list itself.
+- Real native rows. Arrow up and down and the screen reader reads the focused row
+  with its column headers, because it is a genuine native list item, not a styled
+  `<div>` or an ARIA emulation. Nothing is injected; the platform reads the
+  control.
+- Multi-select by default. Selecting rows for a bulk operation (move, reorder,
+  delete a region) is a native selection the user already knows how to drive. The
+  host reads the selected rows, acts through the model, and refreshes.
+- Selection and focus helpers that keep the screen reader honest. A native list
+  item is only spoken when its control has system focus, so moving to a row takes
+  focus to the grid, makes the row visible, and ensures it is read. Restoring a
+  moved block re-selects the whole block and focuses the first row.
 - Editing round-trips through your model, so the value the screen reader confirms
   is the validated, normalized one, never the raw keystrokes. If an edit is
-  rejected the user hears why and the editor reopens so they can fix it.
-- Only one page of rows is ever in the DOM, but `aria-rowcount` keeps the user's
-  sense of "row N of many" correct. Arrow past the bottom and the next page loads
-  and navigation just keeps going.
+  rejected the user hears why.
+- A pure-Python model with no wx in it. Columns, row data, selection math, and
+  cell formatting are all plain Python, so they are unit-testable headless,
+  without a display.
 
 ## Install
 
@@ -38,28 +46,27 @@ and announced correctly.
 pip install wx-accessible-grid
 ```
 
-That pulls in wxPython and wx-accessible-webview.
+That pulls in wxPython.
 
 ## Use it
 
-Subclass `GridModel` to describe your columns and provide the data, then drop an
-`AccessibleGrid` into a sizer.
+Describe your columns and provide the row data through a model, then drop the
+grid into a sizer. The grid is a virtual `wx.ListCtrl`, so it asks your model for
+each cell's text as it paints, rather than holding every row in the control.
 
 ```python
 import wx
-from wx_accessible_grid import AccessibleGrid, GridModel, Column, SetResult
-from wx_accessible_grid import TEXT, COMBO, CHECKBOX, SLIDER, STEPPER, NONE
+from wx_accessible_grid import AccessibleGrid, GridModel, Column
 
 class ChannelModel(GridModel):
     def __init__(self, rows):
         self._rows = rows
         self._cols = [
-            Column("num", "#", editor=NONE, is_row_header=True),
-            Column("name", "Name", editor=TEXT),
-            Column("mode", "Mode", editor=COMBO, choices=["FM", "AM", "USB"]),
-            Column("active", "Active", editor=CHECKBOX),
-            Column("volume", "Volume", editor=SLIDER, min=0, max=100, step=1),
-            Column("priority", "Priority", editor=STEPPER, min=0, max=10),
+            Column("num", "#", is_row_header=True),
+            Column("name", "Name"),
+            Column("mode", "Mode"),
+            Column("active", "Active"),
+            Column("volume", "Volume"),
         ]
 
     def columns(self):
@@ -68,72 +75,65 @@ class ChannelModel(GridModel):
     def row_count(self):
         return len(self._rows)
 
-    def display(self, row, column):
+    def cell_text(self, row, column):
+        # the text the list paints and the screen reader reads for this cell
         if column == "num":
             return str(row + 1)
         val = self._rows[row][column]
-        return "Yes" if (column == "active" and val) else "No" if column == "active" else str(val)
-
-    def edit_value(self, row, column):
-        # the form the editor wants, when it differs from the shown text
         if column == "active":
-            return "true" if self._rows[row]["active"] else "false"
-        return self.display(row, column)
+            return "Yes" if val else "No"
+        return str(val)
 
-    def set_cell(self, row, column, value):
-        # validate and normalize here; what you return is what gets announced
-        self._rows[row][column] = value
-        return SetResult(True, display=value, message=f"{column} updated")
-
-grid = AccessibleGrid(panel, ChannelModel(rows), label="Memory channels",
-                      page_size=100)
+grid = AccessibleGrid(panel, ChannelModel(rows), label="Memory channels")
 sizer.Add(grid.control, 1, wx.EXPAND)
 ```
 
+The grid exposes the native selection so the host can act on it:
+
+```python
+nums = grid.selected_rows()      # selected rows, or the focused row if none
+grid.select_rows([3, 4, 5])      # replace the selection
+grid.focus_row(3)                # move focus there and make sure it is read
+grid.refresh_rows([3])           # repaint just those rows after an edit
+```
+
 The `dev` extra (`pip install "wx-accessible-grid[dev]"`) adds pytest for the
-model and renderer tests, which run without wx.
-
-## The editors
-
-- `TEXT`: a single-line edit box. Type, then Enter to commit.
-- `COMBO`: a drop-down of fixed choices, which also stands in for a radio group.
-  Arrow through the list, Enter to commit.
-- `CHECKBOX`: a boolean toggle. Space toggles it, Enter commits.
-- `SLIDER`: a range control adjusted with the arrow keys.
-- `STEPPER`: a number spinner. Type a value or step it with the arrows.
-- `NONE`: read-only, for ids and computed columns. Not editable.
-
-`edit_value` gives the editor its starting value when that differs from the
-displayed text (a checkbox wants `true`/`false`, a slider wants a bare number,
-even if the cell shows `Yes` or `146.520 MHz`).
+model tests, which run without wx.
 
 ## Keyboard
 
-- Arrows: move the focused cell. `Home` / `End`: first / last cell in the row.
-  `Ctrl+Home` / `Ctrl+End`: first / last cell in the grid. `Page Up` / `Page Down`:
-  previous / next page.
-- `F2` or `Enter`: edit the focused cell. `Enter`: commit. `Escape`: cancel.
-- `Space` or `Ctrl+Space`: select or unselect the row.
-- `Delete`: delete the selected rows, or the focused row if none are selected.
-- Context menu key or `Shift+F10`: ask the host for a row menu.
+- Arrow up and down: move the focused row. The screen reader reads the row and
+  its column headers as a native list item.
+- `Home` / `End`: first / last row. `Page Up` / `Page Down`: a screenful at a
+  time. All standard native `wx.ListCtrl` navigation works, because it is a
+  native list.
+- Space and `Ctrl+Space`: extend or toggle the native selection.
+- Editing and row actions are wired by the host through the selection and focus
+  helpers (for example, a native edit dialog or a context menu on `Shift+F10`),
+  so they use real native controls that read correctly.
 
 ## How it works
 
-The grid is a `<table role="grid">` with `<th scope="col">` column headers,
-a `<th scope="row">` row header, and `<td role="gridcell">` cells, rendered into
-an `AccessibleWebView`. A roving `tabindex` gives exactly one cell focus at a
-time, which puts the screen reader in focus mode so it reads that cell and the
-headers that changed, not the whole table. A small vanilla-JS runtime, installed
-once, handles navigation, editing, and selection, and talks to Python over the
-WebView bridge. Your `GridModel` does the validation and persistence on the
-Python side.
+`AccessibleGrid` wraps a `wx.ListCtrl` created with `LC_REPORT | LC_VIRTUAL`.
+Report mode gives it real column headers; virtual mode means it never stores the
+rows itself: it calls your model's `cell_text(row, column)` for each visible cell
+as it paints. Because it is a native control, the platform accessibility layer
+(UIA on Windows, NSAccessibility on macOS, AT-SPI on Linux) exposes the rows
+directly to the screen reader. No HTML, no WebView bridge, no injected JavaScript.
+
+The model carries all the data and the index/number and selection arithmetic, in
+plain Python with no wx, so it can be tested headless. The grid widget is a thin
+shell over the native list plus the selection and focus helpers that make sure a
+moved or edited row is both selected and actually spoken.
 
 ## Status
 
-Version 0.1.0, first release, built for VRP (the accessible radio programmer) and
-extracted as a reusable library. Tested on macOS WebView with VoiceOver and in
-unit tests for the model and renderer. NVDA and JAWS verification on Windows
-WebView2 is the next milestone; reports welcome.
+This is the native rewrite. The library moved off the WebView-hosted ARIA grid to
+a native virtual `wx.ListCtrl` after the native approach proved out in Versatile
+Radio Programmer's channel grid (instant population at full radio size, correct
+per-row reading, native multi-select). Tested on macOS with VoiceOver and in
+headless unit tests for the model. NVDA and JAWS verification on Windows is the
+next milestone; reports welcome.
 
 ## License
 
