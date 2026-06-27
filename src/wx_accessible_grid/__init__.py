@@ -44,7 +44,7 @@ from __future__ import annotations
 from wx_accessible_grid.grid import AccessibleGrid
 from wx_accessible_grid.model import AUTO, NARROW, WIDE, Column, GridModel
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 __all__ = [
     "AccessibleGrid",
     "GridModel",

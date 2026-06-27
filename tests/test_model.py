@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from wx_accessible_grid.model import Column, GridModel
+from wx_accessible_grid.model import Column, GridModel, clamp_column
 
 
 def test_unknown_width_hint_rejected():
@@ -57,3 +57,11 @@ def test_row_label_falls_back_to_one_based_number():
 
 def test_column_names_in_order():
     assert _Model().column_names() == ["num", "name"]
+
+
+def test_clamp_column_moves_and_stops_at_edges():
+    assert clamp_column(0, 1, 3) == 1  # right
+    assert clamp_column(2, 1, 3) == 2  # right off the end stays put
+    assert clamp_column(0, -1, 3) == 0  # left off the start stays put
+    assert clamp_column(2, -1, 3) == 1  # left
+    assert clamp_column(0, 1, 0) == 0  # no columns

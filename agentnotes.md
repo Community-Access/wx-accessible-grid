@@ -27,8 +27,16 @@ injected JS.
   whose `OnGetItemText(item, column)` pulls text from the model. Public API:
   `.control` (the wx.ListCtrl, goes in a sizer), `.model`, `.refresh()`,
   `.refresh_rows(rows)`, `.selected_rows()`, `.focused_row()`, `.select_rows()`,
-  `.focus_row(row)`. `focus_row` takes keyboard focus to the grid so a native
-  list item is actually spoken.
+  `.focus_row(row)`, plus the cell cursor: `.current_column()`, `.current_cell()`.
+  `focus_row` takes keyboard focus to the grid so a native list item is actually
+  spoken.
+- Navigation (0.6.0): Up/Down move by row (native list reads the row). Left/Right
+  move a cell cursor across columns; the grid handles those keys, tracks
+  `_current_col` (clamped via `model.clamp_column`, no wrap), and voices the cell
+  as "value, column label" through the `announce(str)` callback passed to
+  `AccessibleGrid(..., announce=...)`. A native list cannot announce per-cell, so
+  without an `announce` callback Left/Right move silently. VRP wires `announce` to
+  its prism-backed `Announcer` (`vrp/native/announce.py`).
 - `examples/demo.py` — STALE. Still the old WebView API (imports removed names
   like CHECKBOX/COMBO/ContextMenuItem and passes `row_select=`/`on_context=`). It
   will crash until rewritten to the native API. My rewrite was declined; left for
@@ -58,8 +66,9 @@ whether a native backend was on the roadmap; it is now the whole design.
 
 ## Status (2026-06-27)
 
-- 0.5.0 native rewrite done. Package imports, builds (no webview dep), 9 tests
-  pass (model + wx smoke).
+- 0.5.0 native rewrite done and PUBLISHED to PyPI. 0.6.0 adds the Left/Right cell
+  cursor (in working tree, not yet committed or published). Package imports,
+  builds (no webview dep), 11 tests pass (model + nav + wx smoke).
 - NOT yet manually driven with VoiceOver/NVDA in a real window — that is the real
   bar and is still owed (`examples/demo.py` needs its native rewrite first).
 - README rewritten to the native design. No git commits yet (Taylor commits

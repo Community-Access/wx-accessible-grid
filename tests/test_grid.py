@@ -69,3 +69,31 @@ def test_refresh_after_row_count_change(app):
     grid.refresh()
     assert grid.control.GetItemCount() == 8
     frame.Destroy()
+
+
+def _key(code):
+    evt = wx.KeyEvent(wx.wxEVT_KEY_DOWN)
+    evt.SetKeyCode(code)
+    return evt
+
+
+def test_left_right_moves_cell_cursor_and_announces(app):
+    frame = wx.Frame(None)
+    spoken = []
+    grid = AccessibleGrid(frame, _Model(5), label="Channels", announce=spoken.append)
+    grid.focus_row(2)  # row index 2 -> "3" / "Row 3"
+
+    assert grid.current_column() == 0
+    grid._on_key_down(_key(wx.WXK_RIGHT))
+    assert grid.current_column() == 1
+    assert spoken[-1] == "Row 3, Name"  # value, then column label
+
+    grid._on_key_down(_key(wx.WXK_RIGHT))  # off the right edge, stays on last col
+    assert grid.current_column() == 1
+    assert spoken[-1] == "Row 3, Name"
+
+    grid._on_key_down(_key(wx.WXK_LEFT))
+    assert grid.current_column() == 0
+    assert spoken[-1] == "3, #"
+    assert grid.current_cell() == (2, 0)
+    frame.Destroy()

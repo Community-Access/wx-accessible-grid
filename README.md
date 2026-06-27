@@ -22,10 +22,13 @@ correctly, with editing that round-trips through your model.
   on demand through a single `OnGetItemText` callback, so a grid with thousands
   of rows populates instantly and there is no paging. The screen reader still
   gets a correct sense of "row N of many" from the native list itself.
-- Real native rows. Arrow up and down and the screen reader reads the focused row
-  with its column headers, because it is a genuine native list item, not a styled
-  `<div>` or an ARIA emulation. Nothing is injected; the platform reads the
-  control.
+- Up and down move by row; left and right move by cell. Arrow up and down and
+  the screen reader reads the focused row, because it is a genuine native list
+  item, not a styled `<div>` or an ARIA emulation. Arrow left and right and a
+  cell cursor walks the columns of that row, speaking each cell as "value, column
+  name" so you can read across a row one field at a time. (A native list will not
+  announce per cell on its own, so the grid voices the cell through an `announce`
+  callback you pass in; see below.)
 - Multi-select by default. Selecting rows for a bulk operation (move, reorder,
   delete a region) is a native selection the user already knows how to drive. The
   host reads the selected rows, acts through the model, and refreshes.
@@ -84,17 +87,26 @@ class ChannelModel(GridModel):
             return "Yes" if val else "No"
         return str(val)
 
-grid = AccessibleGrid(panel, ChannelModel(rows), label="Memory channels")
+grid = AccessibleGrid(panel, ChannelModel(rows), label="Memory channels",
+                      announce=speak)
 sizer.Add(grid.control, 1, wx.EXPAND)
 ```
 
-The grid exposes the native selection so the host can act on it:
+`announce` is how left/right speaks. A native list does not announce per cell, so
+when the cell cursor moves the grid calls `announce("146.520, Frequency")` and
+your app says it however it speaks elsewhere (VRP routes this to prism, plus the
+status bar). Leave `announce` off and left/right still move the cursor, just
+silently. Up/down need nothing here: the native list reads the row itself.
+
+The grid exposes the native selection and the cell cursor so the host can act on
+them:
 
 ```python
 nums = grid.selected_rows()      # selected rows, or the focused row if none
 grid.select_rows([3, 4, 5])      # replace the selection
 grid.focus_row(3)                # move focus there and make sure it is read
 grid.refresh_rows([3])           # repaint just those rows after an edit
+row, col = grid.current_cell()   # where the left/right cursor is, for host editing
 ```
 
 The `dev` extra (`pip install "wx-accessible-grid[dev]"`) adds pytest for the
@@ -102,8 +114,11 @@ model tests, which run without wx.
 
 ## Keyboard
 
-- Arrow up and down: move the focused row. The screen reader reads the row and
-  its column headers as a native list item.
+- Arrow up and down: move the focused row. The screen reader reads the row as a
+  native list item.
+- Arrow left and right: move the cell cursor across the columns of the focused
+  row. Each move speaks "value, column name". The cursor stops at the first and
+  last columns; it does not wrap.
 - `Home` / `End`: first / last row. `Page Up` / `Page Down`: a screenful at a
   time. All standard native `wx.ListCtrl` navigation works, because it is a
   native list.
@@ -126,14 +141,22 @@ plain Python with no wx, so it can be tested headless. The grid widget is a thin
 shell over the native list plus the selection and focus helpers that make sure a
 moved or edited row is both selected and actually spoken.
 
+Left and right are the one thing the native list cannot do for itself: it has no
+per-cell cursor. So the grid keeps its own current-column index, handles the
+left/right keys, and on each move reads the cell from the model and hands the
+text to your `announce` callback. Up and down stay entirely native, so the row
+read you get is the real one from the platform, not something reconstructed.
+
 ## Status
 
-This is the native rewrite. The library moved off the WebView-hosted ARIA grid to
+This is the native build. The library moved off the WebView-hosted ARIA grid to
 a native virtual `wx.ListCtrl` after the native approach proved out in Versatile
 Radio Programmer's channel grid (instant population at full radio size, correct
-per-row reading, native multi-select). Tested on macOS with VoiceOver and in
-headless unit tests for the model. NVDA and JAWS verification on Windows is the
-next milestone; reports welcome.
+per-row reading, native multi-select). 0.6.0 adds the left/right cell cursor so
+you can read across a row a field at a time, not just row by row. Tested on macOS
+and in headless unit tests for the model and navigation. NVDA and JAWS
+verification on Windows, with a host that wires `announce` to speech, is the next
+milestone; reports welcome.
 
 ## License
 

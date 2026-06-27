@@ -27,6 +27,14 @@ AUTO = "auto"
 WIDTH_HINTS = frozenset({NARROW, WIDE, AUTO})
 
 
+def clamp_column(current: int, delta: int, column_count: int) -> int:
+    """New column index after moving the cell cursor by ``delta``, clamped to
+    ``[0, column_count - 1]``. Moving off either edge stays put (no wrap)."""
+    if column_count <= 0:
+        return 0
+    return max(0, min(column_count - 1, current + delta))
+
+
 @dataclass
 class Column:
     """One grid column.
