@@ -18,10 +18,12 @@ model, then call :meth:`refresh_rows` (or :meth:`refresh`) to repaint.
 
 from __future__ import annotations
 
+from typing import Callable
+
 import wx
 import wx.dataview as dv
 
-from wx_accessible_grid.model import GridModel
+from wx_accessible_grid.model import GridModel, clamp_column
 
 # Width hints -> pixel widths.
 _WIDTH = {"narrow": 90, "wide": 200, "auto": 130}
@@ -38,14 +40,33 @@ class AccessibleGrid:
         Your :class:`GridModel` subclass.
     label:
         Accessible name for the grid (set as the control's name).
+    announce:
+        Optional ``callable(str)`` that enables an app-level Left/Right cell
+        cursor. When given, Left/Right move a cursor across the focused row's
+        columns and the moved-to cell is voiced as ``"<value>, <column label>"``
+        through this callback. This is for platforms where the native control
+        does not announce a per-cell cursor itself (Windows/NVDA, where
+        DataViewCtrl is wx's generic control). Leave it ``None`` on macOS, where
+        VoiceOver reads cells natively with VO+Left/Right, so there is no cursor
+        and no key handling (identical to having no cursor at all).
     """
 
-    def __init__(self, parent: wx.Window, model: GridModel, label: str = "Grid") -> None:
+    def __init__(
+        self,
+        parent: wx.Window,
+        model: GridModel,
+        label: str = "Grid",
+        announce: Callable[[str], None] | None = None,
+    ) -> None:
         self._model = model
         self._columns = list(model.columns())
+        self._announce = announce
+        self._current_col = 0
         self._list = dv.DataViewListCtrl(parent, style=dv.DV_MULTIPLE | dv.DV_ROW_LINES)
         self._list.SetName(label)
         self._populate()
+        if announce is not None:
+            self._list.Bind(wx.EVT_KEY_DOWN, self._on_key_down)
 
     def _populate(self) -> None:
         """Rebuild columns and rows from the model. DataViewListCtrl is not a
@@ -68,12 +89,44 @@ class AccessibleGrid:
     def model(self) -> GridModel:
         return self._model
 
+    # -- cell cursor (opt-in, via announce) ----------------------------
+    def current_column(self) -> int:
+        """The 0-based index of the column the cell cursor is on (0 when the
+        cursor is disabled)."""
+        return self._current_col
+
+    def current_cell(self) -> tuple[int, int] | None:
+        """``(row, column_index)`` for the cell cursor, or ``None`` if no row is
+        focused. Lets the host wire a per-cell action to the cursor position."""
+        row = self.focused_row()
+        return None if row is None else (row, self._current_col)
+
+    def _on_key_down(self, event: wx.KeyEvent) -> None:
+        key = event.GetKeyCode()
+        if key in (wx.WXK_LEFT, wx.WXK_RIGHT) and not event.HasAnyModifiers():
+            delta = -1 if key == wx.WXK_LEFT else 1
+            self._current_col = clamp_column(self._current_col, delta, len(self._columns))
+            self._speak_current_cell()
+            return  # consume: don't let the control do anything with Left/Right
+        event.Skip()
+
+    def _speak_current_cell(self) -> None:
+        if self._announce is None:
+            return
+        row = self.focused_row()
+        if row is None or not self._columns:
+            return
+        col = self._columns[self._current_col]
+        value = self._model.cell_text(row, col.name)
+        self._announce(f"{value if value else 'blank'}, {col.label}")
+
     # -- structure -----------------------------------------------------
     def set_columns(self) -> None:
         """Rebuild the columns and rows from the model. Use when the dataset's
         column *shape* changes (e.g. a different radio with a different feature
         set)."""
         self._columns = list(self._model.columns())
+        self._current_col = 0
         self._populate()
 
     # -- refresh -------------------------------------------------------

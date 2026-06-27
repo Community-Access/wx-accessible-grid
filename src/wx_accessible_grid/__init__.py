@@ -19,6 +19,10 @@ What you get:
   also reads across the cells of a row natively, by column.
 * Native multi-select, plus selection and focus helpers that make sure a moved or
   edited row is both selected and actually spoken.
+* An optional app-level Left/Right cell cursor for platforms where the native
+  control does not announce per-cell (Windows/NVDA). Pass ``announce=`` and the
+  grid voices ``"<value>, <column label>"`` as you arrow across a row. Leave it
+  off on macOS, where VoiceOver reads cells natively.
 * A pure-Python model with no wx in it, so columns, row counts, and cell text are
   unit-testable headless.
 
@@ -46,7 +50,7 @@ from __future__ import annotations
 from wx_accessible_grid.grid import AccessibleGrid
 from wx_accessible_grid.model import AUTO, NARROW, WIDE, Column, GridModel
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 __all__ = [
     "AccessibleGrid",
     "GridModel",

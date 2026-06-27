@@ -31,6 +31,12 @@ with editing that round-trips through your model.
 - Selection and focus helpers that keep the screen reader honest. Moving to a row
   sets it as the current item before taking focus, so it is read once and not
   announced stale-then-correct.
+- An optional app-level Left/Right cell cursor, for platforms where the native
+  control does not announce per-cell. On Windows the native list view does not
+  speak a cell cursor as you arrow within a row, so pass an `announce` callback
+  and the grid voices each cell as "value, column" itself. On macOS you leave it
+  off: VoiceOver already reads cells with VO+Left/Right, a separate key channel,
+  so the two never collide.
 - Editing round-trips through your model, so the value the screen reader confirms
   is the validated, normalized one, never the raw keystrokes.
 - A pure-Python model with no wx in it. Columns, row count, and cell text are all
@@ -83,6 +89,19 @@ grid = AccessibleGrid(panel, ChannelModel(rows), label="Memory channels")
 sizer.Add(grid.control, 1, wx.EXPAND)
 ```
 
+On Windows, where the native control does not speak a per-cell cursor, pass an
+`announce` callback to turn on Left/Right cell navigation:
+
+```python
+grid = AccessibleGrid(panel, ChannelModel(rows), label="Memory channels",
+                      announce=speak)   # speak("146.520, Frequency")
+row, col = grid.current_cell()          # where the cursor is, for a per-cell edit
+```
+
+Leave `announce` off on macOS so VoiceOver stays the single voice. With it off,
+the grid behaves exactly as it does without the parameter (no cursor, no key
+handling).
+
 The grid exposes the native selection so the host can act on it:
 
 ```python
@@ -101,7 +120,11 @@ model tests, which run without wx.
 
 - Arrow up and down: move the current row. The screen reader reads the row.
 - On macOS, VoiceOver reads across the cells of the focused row by column using
-  its own table navigation; the app does not have to do anything for that.
+  its own table navigation (VO+Left/Right); the app does not have to do anything
+  for that.
+- On Windows, with an `announce` callback passed in, Left and Right move a cell
+  cursor across the columns of the focused row and each cell is spoken as "value,
+  column". The cursor stops at the first and last columns; it does not wrap.
 - Standard native `DataViewListCtrl` selection (Shift and Ctrl with arrows or
   click) extends or toggles the multi-selection.
 - Editing and row actions are wired by the host through the selection and focus
@@ -127,10 +150,13 @@ then call `refresh_rows`.
 
 ## Status
 
-Version 0.7.0. The library is built on `DataViewListCtrl` after the earlier
-`wx.ListCtrl` version was found to be silent under VoiceOver on macOS (a structural
-limitation of wx's generic list on macOS, not a bug that could be patched). The
-native channel grid in Versatile Radio Programmer proved this control out on real
+Version 0.8.0. The library is built on `DataViewListCtrl` (since 0.7.0) after the
+earlier `wx.ListCtrl` version was found to be silent under VoiceOver on macOS (a
+structural limitation of wx's generic list on macOS, not a bug that could be
+patched). 0.8.0 adds the optional Left/Right cell cursor back on top of that
+backend, gated on the `announce` callback, so Windows/NVDA users get cell-by-cell
+reading while macOS/VoiceOver keeps its native default untouched. The native
+channel grid in Versatile Radio Programmer proved this control out on real
 hardware. Tested here with headless unit tests for the model and wx smoke tests for
 the widget. A full manual pass with VoiceOver on macOS and NVDA/JAWS on Windows is
 the next milestone; reports welcome.

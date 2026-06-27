@@ -23,13 +23,22 @@ announcements; the screen reader does cell navigation itself.
   `row_count()`, `cell_text(row, column)`. Optional: `row_label(row)`,
   `column_names()`. Pure Python, no wx, unit-tested headless.
   `Column(name, label, is_row_header=False, width_hint="auto"|"narrow"|"wide")`.
-- `grid.py` — `AccessibleGrid` wraps the DataViewListCtrl. API: `.control`,
-  `.model`, `.set_columns()` (rebuild columns + rows when the dataset shape
-  changes), `.refresh()` (update all cells in place; rebuild if row count
-  changed), `.refresh_rows(rows)`, `.selected_rows()`, `.focused_row()`,
-  `.select_rows()`, `.focus_row(row)`. `focus_row` does `SetCurrentItem` BEFORE
-  `SetFocus` to avoid a stale-then-correct double announcement. DataViewListCtrl
-  is NOT virtual — it stores rows (`AppendItem`); fine for hundreds/low-thousands.
+- `grid.py` — `AccessibleGrid(parent, model, label, announce=None)` wraps the
+  DataViewListCtrl. API: `.control`, `.model`, `.set_columns()` (rebuild columns +
+  rows when the dataset shape changes), `.refresh()` (update all cells in place;
+  rebuild if row count changed), `.refresh_rows(rows)`, `.selected_rows()`,
+  `.focused_row()`, `.select_rows()`, `.focus_row(row)`. `focus_row` does
+  `SetCurrentItem` BEFORE `SetFocus` to avoid a stale-then-correct double
+  announcement. DataViewListCtrl is NOT virtual — it stores rows (`AppendItem`);
+  fine for hundreds/low-thousands.
+- Opt-in Left/Right cell cursor (0.8.0, issue #2): pass `announce=callable(str)`
+  and the grid binds `EVT_KEY_DOWN`, tracks `_current_col` (via
+  `model.clamp_column`), consumes unmodified Left/Right, and voices "value, column
+  label" through `announce`. Plus `current_column()`/`current_cell()`. With
+  `announce=None` (default) NOTHING is bound — identical to 0.7.0. This is for
+  Windows/NVDA, where DataViewCtrl is wx's generic control and does not speak a
+  per-cell cursor; on macOS leave it off so VoiceOver (VO+Left/Right) is the only
+  voice.
 - `tests/` — `test_model.py` (headless) + `test_grid.py` (wx smoke; skips without
   a display). 12 pass via `uv run --extra dev pytest`.
 
@@ -52,9 +61,15 @@ VoiceOver rationale is documented in that repo at
   structurally silent under VoiceOver (falls back to wx's generic custom-drawn
   list, exposes nothing to NSAccessibility). The manual Left/Right was a
   workaround for the lack of native per-cell reading.
-- 0.7.0: rebased onto **DataViewListCtrl** (NSTableView). VoiceOver reads cells
-  natively, so the Left/Right cell cursor and `announce` hook were removed (they
-  would double-talk with VoiceOver). This is the current, correct design.
+- 0.7.0: rebased onto **DataViewListCtrl** (NSTableView). I over-corrected and
+  REMOVED the Left/Right cursor + announce hook entirely, reasoning VoiceOver reads
+  cells natively. That regressed Windows/NVDA, where DataViewCtrl is generic and
+  does NOT speak a per-cell cursor — and NVDA is VRP's primary user. (Doug, issue
+  #2.)
+- 0.8.0: restored the cursor as OPT-IN on the DataViewListCtrl backend. They
+  compose: announce-driven cursor on plain Left/Right (Windows) vs VoiceOver's
+  VO+Left/Right (macOS), different key channels. Default `announce=None` keeps
+  0.7.0's VoiceOver-correct behavior. This is the current, correct design.
 
 ## VRP integration status
 

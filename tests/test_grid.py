@@ -93,6 +93,43 @@ def test_set_columns_rebuilds_for_a_new_shape(app):
     frame.Destroy()
 
 
+def _key(code):
+    evt = wx.KeyEvent(wx.wxEVT_KEY_DOWN)
+    evt.SetKeyCode(code)
+    return evt
+
+
+def test_announce_cursor_moves_and_speaks(app):
+    frame = wx.Frame(None)
+    spoken = []
+    grid = AccessibleGrid(frame, _Model(5), label="Channels", announce=spoken.append)
+    grid.focus_row(2)  # row index 2 -> "3" / "Row 3"
+
+    assert grid.current_column() == 0
+    grid._on_key_down(_key(wx.WXK_RIGHT))
+    assert grid.current_column() == 1
+    assert spoken[-1] == "Row 3, Name"
+
+    grid._on_key_down(_key(wx.WXK_RIGHT))  # off the right edge, stays put
+    assert grid.current_column() == 1
+
+    grid._on_key_down(_key(wx.WXK_LEFT))
+    assert grid.current_column() == 0
+    assert spoken[-1] == "3, #"
+    assert grid.current_cell() == (2, 0)
+    frame.Destroy()
+
+
+def test_no_announce_means_no_cursor_binding(app):
+    # Default (announce=None) is the VoiceOver-correct 0.7.0 behavior: no key
+    # handler bound, cursor stays at 0.
+    frame = wx.Frame(None)
+    grid = AccessibleGrid(frame, _Model(5), label="Channels")
+    assert grid._announce is None
+    assert grid.current_column() == 0
+    frame.Destroy()
+
+
 def test_refresh_rows_updates_cells(app):
     frame = wx.Frame(None)
 
