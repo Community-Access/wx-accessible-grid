@@ -1,55 +1,30 @@
 """``AccessibleGrid`` — a native, screen-reader-first data grid widget.
 
-It wraps a virtual ``wx.ListCtrl`` (``LC_REPORT | LC_VIRTUAL``) over your
-:class:`~wx_accessible_grid.model.GridModel`. Report mode gives real column
-headers; virtual mode means the control never stores the rows, it asks the model
-for each visible cell as it paints. Because it is a native control, the platform
-accessibility layer (UIA on Windows, NSAccessibility on macOS, AT-SPI on Linux)
-exposes the rows directly to NVDA, JAWS, and VoiceOver. No WebView, no HTML, no
-injected JavaScript.
+It wraps a ``wx.dataview.DataViewListCtrl``, which is a real native control on
+every platform: ``NSTableView`` on macOS (so VoiceOver reads the table, its rows,
+and each cell value out of the box, e.g. "Frequency, 146.520"), and the native
+list view on Windows/GTK for NVDA and Orca. The screen reader does cell
+navigation itself, so there is nothing to announce manually and no WebView.
 
-Navigation model:
-
-* Up/Down move by row. The native list reads the focused row for free.
-* Left/Right move a cell cursor across the columns of the focused row. A native
-  list does not announce per cell, so the grid voices the moved-to cell itself,
-  as ``"<value>, <column label>"``, through an ``announce`` callback you pass in
-  (wire it to your app's speech: prism, the status bar, whatever you use). With
-  no ``announce`` callback the cursor still moves but says nothing.
+(The earlier ``wx.ListCtrl`` report-mode version of this library was silent under
+VoiceOver on macOS: `wx.ListCtrl` falls back to wx's generic custom-drawn
+implementation there, which exposes nothing to NSAccessibility. DataViewListCtrl
+wraps NSTableView instead, which carries Apple's accessibility for free.)
 
 Add :attr:`control` to a sizer like any wx window. Editing and row actions are
-host-driven: read the selection with :meth:`selected_rows` and the cell cursor
-with :meth:`current_cell`, act through your own model, then call
-:meth:`refresh_rows` (or :meth:`refresh`) to repaint.
+host-driven: read the selection with :meth:`selected_rows`, act through your own
+model, then call :meth:`refresh_rows` (or :meth:`refresh`) to repaint.
 """
 
 from __future__ import annotations
 
-from typing import Callable
-
 import wx
+import wx.dataview as dv
 
-from wx_accessible_grid.model import GridModel, clamp_column
+from wx_accessible_grid.model import GridModel
 
 # Width hints -> pixel widths.
 _WIDTH = {"narrow": 90, "wide": 200, "auto": 130}
-
-
-class _GridListCtrl(wx.ListCtrl):
-    """The virtual ``wx.ListCtrl`` that pulls cell text from the model.
-
-    ``OnGetItemText`` is wxWidgets' virtual-list callback; it must be a method on
-    the control subclass, which is why this is its own class rather than a plain
-    ``wx.ListCtrl`` the wrapper configures.
-    """
-
-    def __init__(self, parent: wx.Window, model: GridModel, columns: list) -> None:
-        super().__init__(parent, style=wx.LC_REPORT | wx.LC_VIRTUAL | wx.LC_HRULES)
-        self._model = model
-        self._columns = columns
-
-    def OnGetItemText(self, item: int, column: int) -> str:  # noqa: N802 (wx API)
-        return self._model.cell_text(item, self._columns[column].name)
 
 
 class AccessibleGrid:
@@ -63,148 +38,110 @@ class AccessibleGrid:
         Your :class:`GridModel` subclass.
     label:
         Accessible name for the grid (set as the control's name).
-    announce:
-        Optional ``callable(str)`` the grid calls to voice a cell as you move
-        Left/Right across columns. Wire it to your app's speech path. If omitted,
-        Left/Right still move the cell cursor but nothing is spoken.
     """
 
-    def __init__(
-        self,
-        parent: wx.Window,
-        model: GridModel,
-        label: str = "Grid",
-        announce: Callable[[str], None] | None = None,
-    ) -> None:
+    def __init__(self, parent: wx.Window, model: GridModel, label: str = "Grid") -> None:
         self._model = model
         self._columns = list(model.columns())
-        self._announce = announce
-        self._current_col = 0
-        self._list = _GridListCtrl(parent, model, self._columns)
+        self._list = dv.DataViewListCtrl(parent, style=dv.DV_MULTIPLE | dv.DV_ROW_LINES)
         self._list.SetName(label)
-        for i, col in enumerate(self._columns):
-            self._list.InsertColumn(i, col.label, width=_WIDTH.get(col.width_hint, 130))
-        self._list.SetItemCount(model.row_count())
-        self._list.Bind(wx.EVT_KEY_DOWN, self._on_key_down)
+        self._populate()
+
+    def _populate(self) -> None:
+        """Rebuild columns and rows from the model. DataViewListCtrl is not a
+        virtual control, so it stores the rows; for very large data, switch to a
+        DataViewCtrl + custom model (out of scope here)."""
+        self._list.ClearColumns()
+        self._list.DeleteAllItems()
+        for col in self._columns:
+            self._list.AppendTextColumn(col.label, width=_WIDTH.get(col.width_hint, 130))
+        for r in range(self._model.row_count()):
+            self._list.AppendItem([self._model.cell_text(r, c.name) for c in self._columns])
 
     # -- access --------------------------------------------------------
     @property
-    def control(self) -> wx.ListCtrl:
-        """The underlying ``wx.ListCtrl``; add this to a sizer."""
+    def control(self) -> dv.DataViewListCtrl:
+        """The underlying ``wx.dataview.DataViewListCtrl``; add this to a sizer."""
         return self._list
 
     @property
     def model(self) -> GridModel:
         return self._model
 
-    # -- cell cursor (Left/Right) --------------------------------------
-    def current_column(self) -> int:
-        """The 0-based index of the column the cell cursor is on."""
-        return self._current_col
-
-    def current_cell(self) -> tuple[int, int] | None:
-        """``(row, column_index)`` for the cell cursor, or ``None`` if no row is
-        focused. Handy for wiring a host edit action to the focused cell."""
-        row = self.focused_row()
-        return None if row is None else (row, self._current_col)
-
-    def _on_key_down(self, event: wx.KeyEvent) -> None:
-        key = event.GetKeyCode()
-        if key in (wx.WXK_LEFT, wx.WXK_RIGHT) and not event.HasAnyModifiers():
-            delta = -1 if key == wx.WXK_LEFT else 1
-            moved = clamp_column(self._current_col, delta, len(self._columns))
-            self._current_col = moved
-            self._speak_current_cell()
-            return  # consume: a report list does nothing with Left/Right anyway
-        event.Skip()
-
-    def _speak_current_cell(self) -> None:
-        if self._announce is None:
-            return
-        row = self.focused_row()
-        if row is None or not self._columns:
-            return
-        col = self._columns[self._current_col]
-        value = self._model.cell_text(row, col.name)
-        text = value if value else "blank"
-        self._announce(f"{text}, {col.label}")
-
     # -- structure -----------------------------------------------------
     def set_columns(self) -> None:
-        """Rebuild the columns from the model and reset the row count.
-
-        Use when the dataset's column *shape* changes (e.g. a different radio
-        with a different feature set). ``refresh()`` is for row changes only; this
-        clears and re-inserts the columns, so it also resets the cell cursor to
-        the first column.
-        """
+        """Rebuild the columns and rows from the model. Use when the dataset's
+        column *shape* changes (e.g. a different radio with a different feature
+        set)."""
         self._columns = list(self._model.columns())
-        self._list._columns = self._columns
-        self._current_col = 0
-        self._list.ClearAll()  # drops both columns and items
-        for i, col in enumerate(self._columns):
-            self._list.InsertColumn(i, col.label, width=_WIDTH.get(col.width_hint, 130))
-        self._list.SetItemCount(self._model.row_count())
-        self._list.Refresh()
+        self._populate()
 
     # -- refresh -------------------------------------------------------
     def refresh(self) -> None:
-        """Re-read the row count from the model and repaint the whole list.
-
-        Use after rows are added, removed, or reordered. Keeps the columns (and
-        the screen reader's focus) rather than rebuilding them.
-        """
-        self._list.SetItemCount(self._model.row_count())
-        self._list.Refresh()
+        """Update every cell in place from the model, keeping the control and the
+        screen reader's focus. Falls back to a full rebuild if the row count
+        changed."""
+        n = self._model.row_count()
+        if n != self._list.GetItemCount():
+            self._populate()
+            return
+        for r in range(n):
+            for ci, col in enumerate(self._columns):
+                self._list.SetTextValue(self._model.cell_text(r, col.name), r, ci)
 
     def refresh_rows(self, rows: list[int]) -> None:
-        """Repaint just ``rows`` (their item indexes) after an in-place edit."""
-        count = self._list.GetItemCount()
+        """Update just ``rows`` (their item indexes) in place after an edit."""
+        n = self._list.GetItemCount()
         for r in rows:
-            if 0 <= r < count:
-                self._list.RefreshItem(r)
+            if 0 <= r < n:
+                for ci, col in enumerate(self._columns):
+                    self._list.SetTextValue(self._model.cell_text(r, col.name), r, ci)
 
     # -- selection / focus ---------------------------------------------
+    def _current_row(self) -> int | None:
+        item = self._list.GetCurrentItem()
+        if not item.IsOk():
+            return None
+        row = self._list.ItemToRow(item)
+        return row if row != wx.NOT_FOUND else None
+
     def selected_rows(self) -> list[int]:
         """Selected row indexes; falls back to the focused row when none are
         selected, so a single-row action still has a target."""
-        rows, item = [], self._list.GetFirstSelected()
-        while item != -1:
-            rows.append(item)
-            item = self._list.GetNextSelected(item)
+        rows = []
+        for item in self._list.GetSelections():
+            row = self._list.ItemToRow(item)
+            if row != wx.NOT_FOUND:
+                rows.append(row)
         if not rows:
-            focused = self._list.GetFocusedItem()
-            if focused != -1:
-                rows = [focused]
+            cur = self._current_row()
+            if cur is not None:
+                rows = [cur]
         return sorted(rows)
 
     def focused_row(self) -> int | None:
-        item = self._list.GetFocusedItem()
-        return None if item == -1 else item
+        return self._current_row()
 
     def select_rows(self, rows: list[int]) -> None:
         """Replace the selection with exactly ``rows``."""
-        item = self._list.GetFirstSelected()
-        while item != -1:
-            nxt = self._list.GetNextSelected(item)
-            self._list.Select(item, on=False)
-            item = nxt
-        count = self._list.GetItemCount()
+        self._list.UnselectAll()
+        n = self._list.GetItemCount()
         for r in rows:
-            if 0 <= r < count:
-                self._list.Select(r, on=True)
+            if 0 <= r < n:
+                self._list.SelectRow(r)
 
     def focus_row(self, row: int) -> None:
-        """Move focus to ``row``, make it visible, and ensure it is read.
+        """Move the focused (current) row to ``row``, make it visible, and ensure
+        it is read.
 
-        A native list item is only spoken by NVDA/VoiceOver when its control has
-        system focus, so this takes keyboard focus to the grid if it does not
-        already have it. Pair with :meth:`select_rows` when a row should be both
-        selected and read (a Go-to-channel, a Find, a post-edit return).
+        Sets the current item *before* taking focus: if focus arrived first the
+        screen reader would announce the stale current row, then announce again
+        after the move, a double/wrong announcement on go-to / find / post-edit.
         """
         if not (0 <= row < self._list.GetItemCount()):
             return
+        item = self._list.RowToItem(row)
+        self._list.SetCurrentItem(item)
+        self._list.EnsureVisible(item)
         if wx.Window.FindFocus() is not self._list:
             self._list.SetFocus()
-        self._list.Focus(row)
-        self._list.EnsureVisible(row)

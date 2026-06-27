@@ -1,47 +1,40 @@
 # wx-accessible-grid
 
-An accessible, editable data grid for wxPython that a blind person can actually
-use. It is a **real native wx control**: a virtual `wx.ListCtrl` in report mode.
-NVDA, JAWS, and VoiceOver read it directly, the way they read any native list,
-with no WebView and no HTML in the path.
+An accessible data grid for wxPython that a blind person can actually use. It is a
+**real native wx control**: a `wx.dataview.DataViewListCtrl`. On macOS that wraps
+`NSTableView`, so VoiceOver reads the table, its rows, and each cell value out of
+the box. On Windows and Linux it is the native list view, read by NVDA, JAWS, and
+Orca. No WebView, no HTML, and nothing to announce by hand: the screen reader does
+row and cell navigation itself.
 
-Earlier versions rendered a semantic ARIA grid into a WebView. That worked, but
-it put a browser document between your data and the screen reader, depended on a
-WebView2/WKWebView runtime, and paged the DOM to stay fast. The native virtual
-`wx.ListCtrl`, proven in Versatile Radio Programmer's channel grid, reads each
-row correctly as you arrow through it, populates instantly at any size, and needs
-no browser runtime. That is the library's approach now.
+The control matters. The stock `wx.grid.Grid` reads poorly in NVDA and JAWS. A
+plain `wx.ListCtrl` in report mode is worse: on macOS it falls back to wx's
+generic, custom-drawn implementation, which exposes nothing to NSAccessibility, so
+it is **silent under VoiceOver**. An earlier version of this library used a WebView
+to get around that. `DataViewListCtrl` wraps a real native table on each platform
+instead, so it carries the platform's own accessibility for free, no workaround
+needed.
 
 It is built for data entry, not a spreadsheet engine. There are no formulas. What
-there is, is a native grid that is fully keyboard-operable and announced
-correctly, with editing that round-trips through your model.
+there is, is a native grid that is fully keyboard-operable and announced correctly,
+with editing that round-trips through your model.
 
 ## What you get
 
-- A native virtual list (`LC_REPORT | LC_VIRTUAL`). Virtual means rows are pulled
-  on demand through a single `OnGetItemText` callback, so a grid with thousands
-  of rows populates instantly and there is no paging. The screen reader still
-  gets a correct sense of "row N of many" from the native list itself.
-- Up and down move by row; left and right move by cell. Arrow up and down and
-  the screen reader reads the focused row, because it is a genuine native list
-  item, not a styled `<div>` or an ARIA emulation. Arrow left and right and a
-  cell cursor walks the columns of that row, speaking each cell as "value, column
-  name" so you can read across a row one field at a time. (A native list will not
-  announce per cell on its own, so the grid voices the cell through an `announce`
-  callback you pass in; see below.)
-- Multi-select by default. Selecting rows for a bulk operation (move, reorder,
-  delete a region) is a native selection the user already knows how to drive. The
+- A native table. Arrow up and down to move by row, and the screen reader reads
+  the row. On macOS, VoiceOver also reads across the cells of a row by column
+  ("Frequency, 146.520"), because `NSTableView` exposes every cell, not just the
+  row.
+- Native multi-select. Selecting rows for a bulk operation (move, reorder, delete
+  a region) is a real native selection the user already knows how to drive. The
   host reads the selected rows, acts through the model, and refreshes.
-- Selection and focus helpers that keep the screen reader honest. A native list
-  item is only spoken when its control has system focus, so moving to a row takes
-  focus to the grid, makes the row visible, and ensures it is read. Restoring a
-  moved block re-selects the whole block and focuses the first row.
+- Selection and focus helpers that keep the screen reader honest. Moving to a row
+  sets it as the current item before taking focus, so it is read once and not
+  announced stale-then-correct.
 - Editing round-trips through your model, so the value the screen reader confirms
-  is the validated, normalized one, never the raw keystrokes. If an edit is
-  rejected the user hears why.
-- A pure-Python model with no wx in it. Columns, row data, selection math, and
-  cell formatting are all plain Python, so they are unit-testable headless,
-  without a display.
+  is the validated, normalized one, never the raw keystrokes.
+- A pure-Python model with no wx in it. Columns, row count, and cell text are all
+  plain Python, so they are unit-testable headless, without a display.
 
 ## Install
 
@@ -53,9 +46,8 @@ That pulls in wxPython.
 
 ## Use it
 
-Describe your columns and provide the row data through a model, then drop the
-grid into a sizer. The grid is a virtual `wx.ListCtrl`, so it asks your model for
-each cell's text as it paints, rather than holding every row in the control.
+Describe your columns and provide the row data through a model, then drop the grid
+into a sizer. The grid asks your model for each cell's text as it builds.
 
 ```python
 import wx
@@ -79,7 +71,7 @@ class ChannelModel(GridModel):
         return len(self._rows)
 
     def cell_text(self, row, column):
-        # the text the list paints and the screen reader reads for this cell
+        # the text the table shows and the screen reader reads for this cell
         if column == "num":
             return str(row + 1)
         val = self._rows[row][column]
@@ -87,26 +79,19 @@ class ChannelModel(GridModel):
             return "Yes" if val else "No"
         return str(val)
 
-grid = AccessibleGrid(panel, ChannelModel(rows), label="Memory channels",
-                      announce=speak)
+grid = AccessibleGrid(panel, ChannelModel(rows), label="Memory channels")
 sizer.Add(grid.control, 1, wx.EXPAND)
 ```
 
-`announce` is how left/right speaks. A native list does not announce per cell, so
-when the cell cursor moves the grid calls `announce("146.520, Frequency")` and
-your app says it however it speaks elsewhere (VRP routes this to prism, plus the
-status bar). Leave `announce` off and left/right still move the cursor, just
-silently. Up/down need nothing here: the native list reads the row itself.
-
-The grid exposes the native selection and the cell cursor so the host can act on
-them:
+The grid exposes the native selection so the host can act on it:
 
 ```python
 nums = grid.selected_rows()      # selected rows, or the focused row if none
 grid.select_rows([3, 4, 5])      # replace the selection
-grid.focus_row(3)                # move focus there and make sure it is read
-grid.refresh_rows([3])           # repaint just those rows after an edit
-row, col = grid.current_cell()   # where the left/right cursor is, for host editing
+grid.focus_row(3)                # make that the current row and ensure it is read
+grid.refresh_rows([3])           # update just those rows' cells after an edit
+grid.refresh()                   # update every cell (or rebuild if rows changed)
+grid.set_columns()               # rebuild columns when the dataset's shape changes
 ```
 
 The `dev` extra (`pip install "wx-accessible-grid[dev]"`) adds pytest for the
@@ -114,49 +99,41 @@ model tests, which run without wx.
 
 ## Keyboard
 
-- Arrow up and down: move the focused row. The screen reader reads the row as a
-  native list item.
-- Arrow left and right: move the cell cursor across the columns of the focused
-  row. Each move speaks "value, column name". The cursor stops at the first and
-  last columns; it does not wrap.
-- `Home` / `End`: first / last row. `Page Up` / `Page Down`: a screenful at a
-  time. All standard native `wx.ListCtrl` navigation works, because it is a
-  native list.
-- Space and `Ctrl+Space`: extend or toggle the native selection.
+- Arrow up and down: move the current row. The screen reader reads the row.
+- On macOS, VoiceOver reads across the cells of the focused row by column using
+  its own table navigation; the app does not have to do anything for that.
+- Standard native `DataViewListCtrl` selection (Shift and Ctrl with arrows or
+  click) extends or toggles the multi-selection.
 - Editing and row actions are wired by the host through the selection and focus
-  helpers (for example, a native edit dialog or a context menu on `Shift+F10`),
+  helpers (for example a native edit dialog, or a context menu on `Shift+F10`),
   so they use real native controls that read correctly.
 
 ## How it works
 
-`AccessibleGrid` wraps a `wx.ListCtrl` created with `LC_REPORT | LC_VIRTUAL`.
-Report mode gives it real column headers; virtual mode means it never stores the
-rows itself: it calls your model's `cell_text(row, column)` for each visible cell
-as it paints. Because it is a native control, the platform accessibility layer
-(UIA on Windows, NSAccessibility on macOS, AT-SPI on Linux) exposes the rows
-directly to the screen reader. No HTML, no WebView bridge, no injected JavaScript.
+`AccessibleGrid` wraps a `wx.dataview.DataViewListCtrl`. On macOS that is a
+`NSTableView`; on Windows and Linux it is the platform's native list view. Because
+it is a real native table, the platform accessibility layer (NSAccessibility, UIA,
+AT-SPI) exposes the table, its rows, and each cell to the screen reader directly.
+No HTML, no WebView bridge, no injected JavaScript, and no hand-rolled
+announcements.
 
-The model carries all the data and the index/number and selection arithmetic, in
-plain Python with no wx, so it can be tested headless. The grid widget is a thin
-shell over the native list plus the selection and focus helpers that make sure a
-moved or edited row is both selected and actually spoken.
-
-Left and right are the one thing the native list cannot do for itself: it has no
-per-cell cursor. So the grid keeps its own current-column index, handles the
-left/right keys, and on each move reads the cell from the model and hands the
-text to your `announce` callback. Up and down stay entirely native, so the row
-read you get is the real one from the platform, not something reconstructed.
+`DataViewListCtrl` is not a virtual control: it stores the rows, so the grid reads
+your model's `cell_text(row, column)` once per cell when it builds, and again only
+for the rows you refresh. For very large data sets you would move to a
+`DataViewCtrl` with a custom model; that is out of scope here. The model carries
+all the data in plain Python with no wx, so it can be tested headless. Editing is
+host-driven: read the selection, edit through your model with a native control,
+then call `refresh_rows`.
 
 ## Status
 
-This is the native build. The library moved off the WebView-hosted ARIA grid to
-a native virtual `wx.ListCtrl` after the native approach proved out in Versatile
-Radio Programmer's channel grid (instant population at full radio size, correct
-per-row reading, native multi-select). 0.6.0 adds the left/right cell cursor so
-you can read across a row a field at a time, not just row by row. Tested on macOS
-and in headless unit tests for the model and navigation. NVDA and JAWS
-verification on Windows, with a host that wires `announce` to speech, is the next
-milestone; reports welcome.
+Version 0.7.0. The library is built on `DataViewListCtrl` after the earlier
+`wx.ListCtrl` version was found to be silent under VoiceOver on macOS (a structural
+limitation of wx's generic list on macOS, not a bug that could be patched). The
+native channel grid in Versatile Radio Programmer proved this control out on real
+hardware. Tested here with headless unit tests for the model and wx smoke tests for
+the widget. A full manual pass with VoiceOver on macOS and NVDA/JAWS on Windows is
+the next milestone; reports welcome.
 
 ## License
 

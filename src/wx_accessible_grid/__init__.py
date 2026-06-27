@@ -1,24 +1,26 @@
 """wx-accessible-grid — an accessible data grid for wxPython.
 
 A blind person can actually use this grid because it is a **real native wx
-control**: a virtual ``wx.ListCtrl`` in report mode. NVDA, JAWS, and VoiceOver
-read it directly, the way they read any native list, with no WebView and no HTML
-in the path.
+control**: a ``wx.dataview.DataViewListCtrl``. On macOS it wraps ``NSTableView``,
+so VoiceOver reads the table, its rows, and each cell value out of the box (e.g.
+"Frequency, 146.520"); on Windows and Linux it is the native list view for NVDA,
+JAWS, and Orca. No WebView, no HTML, and nothing to announce by hand: the screen
+reader does row and cell navigation itself.
 
-The stock ``wx.grid.Grid`` reads poorly (or not at all) in NVDA and JAWS, and an
-earlier version of this library rendered an ARIA grid into a WebView to get
-around that. The native virtual ``wx.ListCtrl`` reads each row correctly as you
-arrow through it, populates instantly at any size, and needs no browser runtime,
-so that is the library's approach now.
+The stock ``wx.grid.Grid`` reads poorly in NVDA/JAWS, and a plain ``wx.ListCtrl``
+in report mode is silent under VoiceOver on macOS (it falls back to wx's generic
+custom-drawn control, which exposes nothing to NSAccessibility). DataViewListCtrl
+wraps a real native table on each platform instead, which carries the platform's
+accessibility for free.
 
-What you get, read correctly in NVDA/JAWS/VoiceOver:
+What you get:
 
-* A native virtual list. Rows are pulled on demand through one ``OnGetItemText``
-  callback, so thousands of rows populate instantly and there is no paging.
-* Real native rows. Arrow up and down and the screen reader reads the focused
-  row with its column headers, because it is a genuine native list item.
-* Native multi-select, plus selection and focus helpers that make sure a moved
-  or edited row is both selected and actually spoken.
+* Up and down move by row; the screen reader reads the row. On macOS, VoiceOver
+  also reads across the cells of a row natively, by column.
+* Native multi-select, plus selection and focus helpers that make sure a moved or
+  edited row is both selected and actually spoken.
+* A pure-Python model with no wx in it, so columns, row counts, and cell text are
+  unit-testable headless.
 
 Quick start::
 
@@ -32,8 +34,8 @@ Quick start::
     grid = AccessibleGrid(panel, MyModel(), label="Memory channels")
     sizer.Add(grid.control, 1, wx.EXPAND)
 
-Editing is host-driven: read ``grid.selected_rows()``, edit through your own
-model with a native control, then call ``grid.refresh_rows(...)``.
+Editing is host-driven: read ``grid.selected_rows()``, edit through your own model
+with a native control, then call ``grid.refresh_rows(...)``.
 
 A Community Access open-source project, created by Taylor Arndt. First built for
 VRP, the accessible radio programmer.
@@ -44,7 +46,7 @@ from __future__ import annotations
 from wx_accessible_grid.grid import AccessibleGrid
 from wx_accessible_grid.model import AUTO, NARROW, WIDE, Column, GridModel
 
-__version__ = "0.6.1"
+__version__ = "0.7.0"
 __all__ = [
     "AccessibleGrid",
     "GridModel",

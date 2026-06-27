@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wx-accessible-grid"
-version = "0.6.1"
-description = "An accessible data grid for wxPython built on a native virtual wx.ListCtrl, read directly by NVDA, JAWS, and VoiceOver with no WebView: instant population at any size, native row navigation, and native multi-select."
+version = "0.7.0"
+description = "An accessible data grid for wxPython built on a native wx.dataview.DataViewListCtrl (NSTableView on macOS, native list view on Windows/Linux), so VoiceOver, NVDA, and JAWS read the table, its rows, and each cell with no WebView."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -17,8 +17,8 @@ maintainers = [
   { name = "Taylor Arndt", email = "taylor@techopolisonline.com" },
 ]
 keywords = [
-  "wxpython", "wxwidgets", "grid", "datagrid", "table", "listctrl", "native",
-  "accessibility", "a11y", "screen-reader", "nvda", "jaws", "voiceover", "keyboard",
+  "wxpython", "wxwidgets", "grid", "datagrid", "table", "dataviewlistctrl",
+  "native", "accessibility", "a11y", "screen-reader", "nvda", "jaws", "voiceover",
 ]
 classifiers = [
   "Programming Language :: Python :: 3",
