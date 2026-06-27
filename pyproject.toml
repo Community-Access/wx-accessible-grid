@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wx-accessible-grid"
-version = "0.6.0"
+version = "0.6.1"
 description = "An accessible data grid for wxPython built on a native virtual wx.ListCtrl, read directly by NVDA, JAWS, and VoiceOver with no WebView: instant population at any size, native row navigation, and native multi-select."
 readme = "README.md"
 requires-python = ">=3.10"

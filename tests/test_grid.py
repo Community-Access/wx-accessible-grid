@@ -71,6 +71,22 @@ def test_refresh_after_row_count_change(app):
     frame.Destroy()
 
 
+def test_set_columns_rebuilds_for_a_new_shape(app):
+    frame = wx.Frame(None)
+    model = _Model(5)
+    grid = AccessibleGrid(frame, model, label="Channels")
+    assert grid.control.GetColumnCount() == 2
+
+    # swap to a different column set, then rebuild
+    model._cols = [Column("num", "#", is_row_header=True)]
+    model._n = 3
+    grid.set_columns()
+    assert grid.control.GetColumnCount() == 1
+    assert grid.control.GetItemCount() == 3
+    assert grid.current_column() == 0
+    frame.Destroy()
+
+
 def _key(code):
     evt = wx.KeyEvent(wx.wxEVT_KEY_DOWN)
     evt.SetKeyCode(code)

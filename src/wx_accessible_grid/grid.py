@@ -129,6 +129,24 @@ class AccessibleGrid:
         text = value if value else "blank"
         self._announce(f"{text}, {col.label}")
 
+    # -- structure -----------------------------------------------------
+    def set_columns(self) -> None:
+        """Rebuild the columns from the model and reset the row count.
+
+        Use when the dataset's column *shape* changes (e.g. a different radio
+        with a different feature set). ``refresh()`` is for row changes only; this
+        clears and re-inserts the columns, so it also resets the cell cursor to
+        the first column.
+        """
+        self._columns = list(self._model.columns())
+        self._list._columns = self._columns
+        self._current_col = 0
+        self._list.ClearAll()  # drops both columns and items
+        for i, col in enumerate(self._columns):
+            self._list.InsertColumn(i, col.label, width=_WIDTH.get(col.width_hint, 130))
+        self._list.SetItemCount(self._model.row_count())
+        self._list.Refresh()
+
     # -- refresh -------------------------------------------------------
     def refresh(self) -> None:
         """Re-read the row count from the model and repaint the whole list.
